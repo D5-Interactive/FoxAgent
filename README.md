@@ -54,7 +54,7 @@
 1. Download the latest foxagent zip from Releases.
 2. Extract it.
 3. Open `about:debugging#/runtime/this-firefox`.
-4. Choose Load Temporary Add-on and select `manifest.json`.
+4. Choose Load Temporary Add-on and select `<release>.zip`.
 
 **Option B: from source**
 ```bash
