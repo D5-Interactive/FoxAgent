@@ -18,11 +18,11 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 
@@ -32,8 +32,10 @@ jobs:
           set -euo pipefail
           VERSION=$(node -p "require('./manifest.json').version")
           TAG="v$VERSION"
+          BUMP_SHA=$(git log -1 --format=%H -- manifest.json)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "bump_sha=$BUMP_SHA" >> "$GITHUB_OUTPUT"
 
           if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
             echo "Tag $TAG already exists; nothing to release."
@@ -83,7 +85,8 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           TAG="${{ steps.version.outputs.tag }}"
-          SUBJECT=$(git log -1 --pretty=%s)
+          BUMP_SHA="${{ steps.version.outputs.bump_sha }}"
+          SUBJECT=$(git log -1 --pretty=%s "$BUMP_SHA")
           DETAILS=$(printf '%s' "$SUBJECT" | sed -E 's/^\[ o7 \]: [^|]+ \| //; s/ \| [^|]+$//')
           if [ -z "$DETAILS" ] || [ "$DETAILS" = "$SUBJECT" ]; then DETAILS="$SUBJECT"; fi
 
@@ -100,7 +103,7 @@ jobs:
           EOF
 
           gh release create "$TAG" "web-ext-artifacts/foxagent-$VERSION.zip" \
-            --target "$GITHUB_SHA" \
+            --target "$BUMP_SHA" \
             --title "FoxAgent $VERSION" \
             --notes-file notes.md
 
