@@ -60,7 +60,7 @@
 ```bash
 git clone https://github.com/D5-Interactive/FoxAgent.git
 cd FoxAgent
-# Open about:debugging, then Load Temporary Add-on, then manifest.json
+# Open about:debugging, then Load Temporary Add-on, then <release>.zip
 ```
 
 Firefox installs signed add-ons permanently. For an unsigned development build, load it as a temporary add-on.
