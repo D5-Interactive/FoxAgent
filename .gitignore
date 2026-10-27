@@ -1,2 +1,2 @@
-# Local agent harness state, never part of the extension
 .opencode/
+__pycache__/

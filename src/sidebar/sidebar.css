@@ -2,7 +2,6 @@
   color-scheme: light;
   --bg: #ffffff;
   --bg-2: #fbfbfb;
-  --panel: #ffffff;
   --card: #f5f5f5;
   --line: #161616;
   --line-2: #000000;
@@ -17,7 +16,6 @@
   --warn: #8a5a00;
   --bad: #b3261e;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
-  --radius: 12px;
   --font: "Inter", "Segoe UI Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 }
@@ -26,7 +24,6 @@
   color-scheme: dark;
   --bg: #0a0a0a;
   --bg-2: #101010;
-  --panel: #0a0a0a;
   --card: #161616;
   --line: #e6e6e6;
   --line-2: #ffffff;
@@ -49,7 +46,6 @@
   scrollbar-color: var(--line-2) transparent;
 }
 
-/* Class display rules must never resurrect a hidden panel or bubble. */
 [hidden] { display: none !important; }
 
 html, body {
@@ -77,8 +73,6 @@ body {
   height: 100vh;
   min-height: 0;
 }
-
-/* ---------------- Top bar ---------------- */
 
 .topbar {
   display: flex;
@@ -183,8 +177,6 @@ body {
 
 .icon-btn:hover { background: var(--card); border-color: var(--line-2); }
 
-/* ---------------- Tabs ---------------- */
-
 .tabs {
   display: flex;
   gap: 2px;
@@ -210,8 +202,6 @@ body {
 
 .tab:hover { color: var(--text); }
 .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
-
-/* ---------------- Other tabs working ---------------- */
 
 .session-strip {
   display: flex;
@@ -247,8 +237,6 @@ body {
 .session-chip[data-warn="true"] { border-color: var(--warn); }
 .session-chip[data-warn="true"] .dot { background: var(--warn); animation: none; }
 
-/* ---------------- Update banner ---------------- */
-
 .update-banner {
   display: flex;
   flex-direction: column;
@@ -269,8 +257,6 @@ body {
 }
 .update-banner .row { justify-content: flex-end; }
 
-/* ---------------- Running note ---------------- */
-
 .running-note {
   padding: 9px 15px;
   border-bottom: 1px solid var(--line);
@@ -283,8 +269,6 @@ body {
 }
 .running-note[hidden] { display: none; }
 .running-note b { color: var(--text); }
-
-/* ---------------- Packs ---------------- */
 
 .pack-list { display: flex; flex-direction: column; gap: 10px; }
 
@@ -362,8 +346,6 @@ body {
   color: var(--muted);
 }
 
-/* ---------------- Panels ---------------- */
-
 main {
   flex: 1;
   min-height: 0;
@@ -395,8 +377,6 @@ main {
 #panel-tasks .scroll,
 #panel-activity .scroll,
 #panel-models .scroll { padding: 20px 16px; }
-
-/* ---------------- Welcome ---------------- */
 
 .welcome {
   border: 1px solid var(--line);
@@ -473,8 +453,6 @@ main {
 .model-chip:hover { border-color: var(--line-2); color: var(--text); }
 .model-chip[aria-pressed="true"] { border-color: var(--line-2); background: var(--accent-soft); color: var(--text); }
 
-/* ---------------- Transcript ---------------- */
-
 .transcript {
   display: flex;
   flex-direction: column;
@@ -525,8 +503,6 @@ main {
 }
 .notice[data-level="warn"] { border-left-color: var(--warn); }
 .notice[data-level="error"] { border-left-color: var(--bad); color: var(--text); }
-
-/* Tool cards */
 
 .tool {
   border: 1px solid var(--line);
@@ -598,8 +574,6 @@ main {
   padding: 10px;
   border-radius: 8px;
 }
-
-/* Approvals + questions */
 
 .pending { display: flex; flex-direction: column; gap: 12px; }
 .pending:not(:empty) { margin-top: 16px; }
@@ -684,8 +658,6 @@ main {
 }
 .ask-options button:hover { border-color: var(--line-2); background: var(--card); }
 .ask-form { display: flex; gap: 7px; }
-
-/* ---------------- Composer ---------------- */
 
 .composer-wrap {
   border-top: 1px solid var(--line);
@@ -796,8 +768,6 @@ main {
   color: var(--faint);
 }
 
-/* Buttons */
-
 .btn {
   border-radius: 8px;
   font-family: inherit;
@@ -836,8 +806,6 @@ textarea:focus-visible {
   outline: 2px solid var(--line-2);
   outline-offset: 2px;
 }
-
-/* ---------------- Markdown ---------------- */
 
 .bubble p { margin: 0 0 10px; }
 .bubble p:last-child { margin-bottom: 0; }
@@ -904,8 +872,6 @@ textarea:focus-visible {
 }
 .md-table th { background: var(--bg-2); font-weight: 650; }
 .md-table tr:last-child td { border-bottom: 0; }
-
-/* ---------------- Tasks ---------------- */
 
 .section-head {
   display: flex;
@@ -1002,8 +968,6 @@ textarea:focus-visible {
 .footnote .mono { font-family: var(--mono); font-size: 10.5px; }
 .footnote b { color: var(--text); font-weight: 600; }
 
-/* ---------------- Activity ---------------- */
-
 .log-list { display: flex; flex-direction: column; gap: 8px; }
 .log-row {
   border: 1px solid var(--line);
@@ -1072,8 +1036,6 @@ textarea:focus-visible {
   max-height: 260px;
   overflow: auto;
 }
-
-/* ---------------- Settings ---------------- */
 
 .settings { display: flex; flex-direction: column; gap: 16px; }
 
@@ -1167,8 +1129,6 @@ textarea.input { resize: vertical; }
   margin-top: 1px;
   background: var(--bg);
 }
-
-/* ---------------- Models ---------------- */
 
 .model-current {
   border: 1px solid var(--line);
@@ -1321,8 +1281,6 @@ textarea.input { resize: vertical; }
 }
 .model-summary-meta { margin-top: 4px; font-size: 10.5px; color: var(--faint); }
 .model-summary-warn { margin-top: 6px; font-size: 11px; color: var(--warn); }
-
-/* ---------------- Toasts ---------------- */
 
 .toasts {
   position: fixed;

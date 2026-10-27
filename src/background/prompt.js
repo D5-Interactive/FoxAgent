@@ -1,41 +1,34 @@
-/*
- * The system prompt is the agent's job description. Two lengths: a compact
- * one for small local models, and a fuller one for larger models. Site
- * playbooks live in tools (canvas.*), not in prompt tokens.
- */
-
 const FENCE = "```";
-
-export const JSON_PROTOCOL = [
+const JSON_PROTOCOL = [
   "If native tool calls are unavailable in this session, request tools by replying with a single fenced JSON block, then stop:",
   FENCE + "json",
   '{"tool": "page.read", "args": {"maxChars": 8000}}',
   FENCE,
-  "For several independent calls use " + FENCE + 'json {"tools": [{"tool": "...", "args": {}}]} ' + FENCE + ". Never mix prose and the JSON block. Prose comes after the results.",
+  "For several independent calls use " + FENCE + 'json {"tools": [{"tool": "...", "args": {}}]} ' + FENCE + ". Never mix prose and the JSON block. Prose comes after the results."
 ].join("\n");
-
 function facts(state, settings, tab, tools) {
   const now = new Date();
-  const dateLine = now.toLocaleString(undefined, {
-    weekday: "long", year: "numeric", month: "long", day: "numeric",
-    hour: "2-digit", minute: "2-digit",
+  const dateLine = now.toLocaleString(void 0, {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
   });
-  const page = tab ? `${tab.title || "(no title)"} — ${tab.url || ""}` : "none";
+  const page = tab ? `${tab.title || "(no title)"} \u2014 ${tab.url || ""}` : "none";
   return {
     dateLine,
     page,
     model: settings.providers[settings.provider]?.model || "(none selected)",
     notes: state.notes.length ? state.notes.join("\n") : "(empty)",
-    tools: tools.map((t) => t.name).join(", "),
+    tools: tools.map((t) => t.name).join(", ")
   };
 }
-
 function smallPrompt(state, settings, tab, tools, packs) {
   const f = facts(state, settings, tab, tools);
   const native = settings.toolMode === "native";
-  const packText = packs.length
-    ? "Site packs:\n" + packs.map((p) => `${p.name}: ${p.prompt}`).join("\n") + "\n"
-    : "";
+  const packText = packs.length ? "Site packs:\n" + packs.map((p) => `${p.name}: ${p.prompt}`).join("\n") + "\n" : "";
   return `You are FoxAgent, an agent that works the user's Firefox browser with tools. You are the small, fast model: take short steps and do not plan in prose.
 Date: ${f.dateLine}
 Model: ${f.model}
@@ -59,18 +52,11 @@ Scratchpad (persists across steps):
 ${f.notes}
 ${native ? "" : "\n" + JSON_PROTOCOL + "\n"}`;
 }
-
 function fullPrompt(state, settings, tab, tools, packs) {
   const f = facts(state, settings, tab, tools);
-  const packText = packs.length
-    ? packs.map((p) => `### ${p.name}\n${p.prompt}`).join("\n\n")
-    : "No site pack matches this tab.";
-  const mode = settings.toolMode === "json"
-    ? "JSON fallback protocol (always)"
-    : settings.toolMode === "native"
-      ? "Native tool calls only"
-      : "Auto (native calls; JSON fallback if the model replies with a tool block)";
-
+  const packText = packs.length ? packs.map((p) => `### ${p.name}
+${p.prompt}`).join("\n\n") : "No site pack matches this tab.";
+  const mode = settings.toolMode === "json" ? "JSON fallback protocol (always)" : settings.toolMode === "native" ? "Native tool calls only" : "Auto (native calls; JSON fallback if the model replies with a tool block)";
   return `You are FoxAgent, an agent that operates the user's real Firefox browser from a sidebar. You read pages, extract information, fill and click interfaces, download materials, and report back. You run on the model the user chose, local or cloud; do not claim to browse outside your tools.
 
 Date: ${f.dateLine}
@@ -129,11 +115,12 @@ ${f.notes}
 
 ${JSON_PROTOCOL}`;
 }
-
-export function buildSystemPrompt(state, settings, tab, options = {}) {
+function buildSystemPrompt(state, settings, tab, options = {}) {
   const tools = options.tools || [];
   const packs = Array.isArray(options.packs) ? options.packs : [];
-  return options.small
-    ? smallPrompt(state, settings, tab, tools, packs)
-    : fullPrompt(state, settings, tab, tools, packs);
+  return options.small ? smallPrompt(state, settings, tab, tools, packs) : fullPrompt(state, settings, tab, tools, packs);
 }
+export {
+  JSON_PROTOCOL,
+  buildSystemPrompt
+};

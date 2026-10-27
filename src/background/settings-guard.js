@@ -1,23 +1,21 @@
-/*
- * The sidebar is display code. It may change known settings, but never
- * provider credentials, base URLs or unknown keys: those have dedicated
- * messages (saveKey/forgetKey/useModel/refreshModels) with their own checks.
- */
-
 import { PROVIDERS } from "./store.js";
-
 const SETTINGS_KEYS = new Set([
-  "provider", "temperature", "maxSteps", "toolMode", "contextChars", "maxPageChars",
-  "approval", "dryRun", "trustedSites", "siteAllowlist", "autoIncludePage",
-  "packs", "autoUpdate", "vision",
+  "provider",
+  "temperature",
+  "maxSteps",
+  "toolMode",
+  "contextChars",
+  "maxPageChars",
+  "approval",
+  "dryRun",
+  "trustedSites",
+  "siteAllowlist",
+  "packs",
+  "autoUpdate",
+  "vision"
 ]);
-
-export const hostList = (value) => (Array.isArray(value) ? value : [])
-  .map((v) => String(v || "").toLowerCase().trim())
-  .filter((v) => v && !/\s/.test(v))
-  .slice(0, 200);
-
-export function cleanSettingsPatch(input) {
+const hostList = (value) => (Array.isArray(value) ? value : []).map((v) => String(v || "").toLowerCase().trim()).filter((v) => v && !/\s/.test(v)).slice(0, 200);
+function cleanSettingsPatch(input) {
   const out = {};
   if (!input || typeof input !== "object") return out;
   for (const [key, value] of Object.entries(input)) {
@@ -33,10 +31,10 @@ export function cleanSettingsPatch(input) {
         out.maxSteps = Math.max(1, Math.min(80, Number(value) || 32));
         break;
       case "contextChars":
-        out.contextChars = Math.max(8000, Math.min(400000, Number(value) || 48000));
+        out.contextChars = Math.max(8e3, Math.min(4e5, Number(value) || 48e3));
         break;
       case "maxPageChars":
-        out.maxPageChars = Math.max(2000, Math.min(60000, Number(value) || 12000));
+        out.maxPageChars = Math.max(2e3, Math.min(6e4, Number(value) || 12e3));
         break;
       case "toolMode":
         if (["auto", "native", "json"].includes(value)) out.toolMode = value;
@@ -45,15 +43,11 @@ export function cleanSettingsPatch(input) {
         if (["auto", "on", "off"].includes(value)) out.vision = value;
         break;
       case "dryRun":
-      case "autoIncludePage":
       case "autoUpdate":
         out[key] = Boolean(value);
         break;
       case "packs":
-        out.packs = (Array.isArray(value) ? value : [])
-          .map((id) => String(id || "").trim().toLowerCase())
-          .filter((id) => /^[a-z0-9][a-z0-9-]*$/.test(id))
-          .slice(0, 30);
+        out.packs = (Array.isArray(value) ? value : []).map((id) => String(id || "").trim().toLowerCase()).filter((id) => /^[a-z0-9][a-z0-9-]*$/.test(id)).slice(0, 30);
         break;
       case "trustedSites":
       case "siteAllowlist":
@@ -75,3 +69,6 @@ export function cleanSettingsPatch(input) {
   }
   return out;
 }
+export {
+  cleanSettingsPatch
+};

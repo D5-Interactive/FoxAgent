@@ -1,22 +1,13 @@
-/*
- * Tool packs: small directories under /packs that add site-specific tools and
- * a short playbook. Packs ship with the extension, so installing means
- * enabling one for this profile; no code is downloaded or evaluated.
- */
-
 import { PACK_MODULES } from "../../packs/registry.js";
-
+import { hostMatches } from "./hosts.js";
 const LOCAL_INDEX = "packs/index.json";
 const REMOTE_INDEX = "https://raw.githubusercontent.com/D5-Interactive/FoxAgent/main/packs/index.json";
-
 let catalogPromise = null;
-
 async function readJson(url) {
   const res = await fetch(url, { credentials: "omit", cache: "no-store" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
   return res.json();
 }
-
 async function loadLocal() {
   const ids = await readJson(browser.runtime.getURL(LOCAL_INDEX));
   const list = Array.isArray(ids?.packs) ? ids.packs : [];
@@ -33,7 +24,7 @@ async function loadLocal() {
         description: String(meta.description || ""),
         hosts: Array.isArray(meta.hosts) ? meta.hosts.map(String) : [],
         author: String(meta.author || ""),
-        icon: browser.runtime.getURL(`packs/${id}/icon.svg`),
+        icon: browser.runtime.getURL(`packs/${id}/icon.svg`)
       });
     } catch (err) {
       console.warn(`FoxAgent: could not load pack ${id}`, err);
@@ -41,8 +32,7 @@ async function loadLocal() {
   }
   return packs;
 }
-
-export function loadCatalog() {
+function loadCatalog() {
   if (!catalogPromise) catalogPromise = loadLocal().catch((err) => {
     console.warn("FoxAgent: could not load the pack catalog", err);
     catalogPromise = null;
@@ -50,35 +40,21 @@ export function loadCatalog() {
   });
   return catalogPromise;
 }
-
-export async function packList(enabledIds = []) {
+async function packList(enabledIds = []) {
   const enabled = new Set(enabledIds);
   const packs = await loadCatalog();
   return packs.map((pack) => ({
     ...pack,
-    enabled: enabled.has(pack.id),
-    bundled: true,
+    enabled: enabled.has(pack.id)
   }));
 }
-
 function moduleFor(pack) {
   return PACK_MODULES[pack.id] || { tools: [], prompt: "" };
 }
-
 function matchesAny(hosts, patterns) {
-  const patternsList = (patterns || []).map((p) => String(p).toLowerCase());
-  if (!patternsList.length) return true;
-  return (hosts || []).some((host) => {
-    const h = String(host || "").toLowerCase().replace(/^www\./, "");
-    if (!h) return false;
-    return patternsList.some((p) => {
-      const bare = p.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-      const regex = new RegExp("^" + bare.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
-      return regex.test(h);
-    });
-  });
+  if (!(patterns || []).length) return true;
+  return (hosts || []).some((host) => hostMatches(host, patterns));
 }
-
 async function activeModules(enabledIds, hosts) {
   const packs = await loadCatalog();
   const enabled = new Set(enabledIds);
@@ -91,13 +67,7 @@ async function activeModules(enabledIds, hosts) {
   }
   return out;
 }
-
-/*
- * Tools are offered when any open tab matches the pack's hosts, so a task can
- * open the site and use the pack on a later step. The prompt only appears when
- * the pinned tab itself matches.
- */
-export async function packTools(enabledIds, hosts) {
+async function packTools(enabledIds, hosts) {
   const mods = await activeModules(enabledIds, hosts);
   const seen = new Set();
   const tools = [];
@@ -110,41 +80,41 @@ export async function packTools(enabledIds, hosts) {
   }
   return tools;
 }
-
-export async function packPrompts(enabledIds, host) {
+async function packPrompts(enabledIds, host) {
   const mods = await activeModules(enabledIds, [host]);
-  return mods
-    .filter(({ mod }) => typeof mod.prompt === "string" && mod.prompt.trim())
-    .map(({ pack, mod }) => ({ id: pack.id, name: pack.name, prompt: mod.prompt.trim() }));
+  return mods.filter(({ mod }) => typeof mod.prompt === "string" && mod.prompt.trim()).map(({ pack, mod }) => ({ id: pack.id, name: pack.name, prompt: mod.prompt.trim() }));
 }
-
-export async function packDescription(id) {
+async function packDescription(id) {
   const packs = await loadCatalog();
   const pack = packs.find((p) => p.id === id);
   if (!pack) throw new Error("Unknown pack.");
   try {
     const res = await fetch(browser.runtime.getURL(`packs/${id}/desc.md`), { cache: "no-store" });
     if (!res.ok) throw new Error(String(res.status));
-    return (await res.text()).slice(0, 20000);
+    return (await res.text()).slice(0, 2e4);
   } catch {
     return pack.description;
   }
 }
-
-export async function checkRemotePacks(enabledIds = []) {
+async function checkRemotePacks() {
   const local = await loadCatalog();
   const localIds = new Set(local.map((p) => p.id));
   const remote = await readJson(REMOTE_INDEX);
-  const ids = (Array.isArray(remote?.packs) ? remote.packs : [])
-    .map((id) => String(id))
-    .filter((id) => /^[a-z0-9][a-z0-9-]*$/i.test(id));
+  const ids = (Array.isArray(remote?.packs) ? remote.packs : []).map((id) => String(id)).filter((id) => /^[a-z0-9][a-z0-9-]*$/i.test(id));
   const newPacks = ids.filter((id) => !localIds.has(id));
   const missing = [...localIds].filter((id) => !ids.includes(id));
   return {
     checkedAt: Date.now(),
     remoteCount: ids.length,
     newPacks,
-    missing,
-    enabled: enabledIds,
+    missing
   };
 }
+export {
+  checkRemotePacks,
+  loadCatalog,
+  packDescription,
+  packList,
+  packPrompts,
+  packTools
+};

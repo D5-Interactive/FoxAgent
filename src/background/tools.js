@@ -1,39 +1,23 @@
-/*
- * Tool registry. Every capability the model can use is declared here with its
- * JSON schema, a risk level, and a plain function. Risk drives user approval:
- *   read  - reads the page / network, no side effects
- *   act   - changes the page or browser state
- *   write - writes files to disk or downloads from the network
- */
-
 import { callPage, resolveTab, waitForLoad } from "./page.js";
 import { addNote } from "./sessions.js";
-import { fetchAllRows, lines } from "./rows.js";
-
-const MAX_TOOL_CHARS = 24000;
-
+import { fetchAllRows, lines, project } from "./rows.js";
+const MAX_TOOL_CHARS = 24e3;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 function clip(value, max = MAX_TOOL_CHARS) {
   const s = String(value ?? "");
   if (s.length <= max) return s;
-  return s.slice(0, max) + `\n\n[truncated: ${s.length - max} more characters. Narrow the request (pick, selector, filter) if you need the rest.]`;
-}
+  return s.slice(0, max) + `
 
+[truncated: ${s.length - max} more characters. Narrow the request (pick, selector, filter) if you need the rest.]`;
+}
 function json(value) {
   return typeof value === "string" ? value : JSON.stringify(value, null, 1);
 }
-
 function safeFilename(name, fallback = "FoxAgent/download") {
-  const parts = String(name || "")
-    .replace(/\\/g, "/")
-    .split("/")
-    .map((p) => p.replace(/[\u0000-\u001f<>:"|?*]/g, "_").trim())
-    .filter((p) => p && p !== "." && p !== "..");
+  const parts = String(name || "").replace(/\\/g, "/").split("/").map((p) => p.replace(/[\u0000-\u001f<>:"|?*]/g, "_").trim()).filter((p) => p && p !== "." && p !== "..");
   const out = parts.join("/").slice(0, 220);
   return out || fallback;
 }
-
 function shortUrl(url) {
   try {
     const u = new URL(url);
@@ -42,7 +26,6 @@ function shortUrl(url) {
     return url;
   }
 }
-
 function formatRate(rate) {
   if (!rate) return "";
   const bits = [];
@@ -51,17 +34,21 @@ function formatRate(rate) {
   if (rate.retryAfter != null) bits.push(`retry after: ${rate.retryAfter}s`);
   return bits.length ? ` (${bits.join(", ")})` : "";
 }
-
 async function pageFor(args, ctx) {
   const tab = await resolveTab(args.tabId, ctx.session?.tabId);
   ctx.activeTab = tab;
   return tab;
 }
-
-/*
- * Small models reason better about text than about refs, so they can click by
- * visible label and see what the click changed without another snapshot.
- */
+function requireHttp(url, what = "URL") {
+  let u;
+  try {
+    u = new URL(String(url));
+  } catch {
+    throw new Error(`${what} is not a valid URL: ${url}`);
+  }
+  if (!/^https?:$/.test(u.protocol)) throw new Error(`${what} must start with http:// or https://`);
+  return u;
+}
 async function pageChange(after, beforeUrl, tabId) {
   const bits = [];
   if (after?.url && after.url !== beforeUrl) bits.push(`navigated to ${after.url}`);
@@ -70,13 +57,12 @@ async function pageChange(after, beforeUrl, tabId) {
     const tabs = await browser.tabs.query({});
     const opened = tabs.filter((t) => t.openerTabId === tabId && t.id !== tabId).slice(0, 3);
     if (opened.length) bits.push(`opened: ${opened.map((t) => `[${t.id}] ${t.title || t.url}`).join("; ")}`);
-  } catch {}
+  } catch {
+  }
   return bits.length ? `Page now: ${bits.join("; ")}.` : "No navigation detected; snapshot again if the page changed.";
 }
-
 const PRIVATE_HOST = /^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$)/i;
 const META_HOST = /(^|\.)(metadata\.google\.internal|instance-data)$/i;
-
 function requirePublicUrl(url) {
   const u = requireHttp(url);
   if (PRIVATE_HOST.test(u.hostname) || META_HOST.test(u.hostname)) {
@@ -84,12 +70,10 @@ function requirePublicUrl(url) {
   }
   return u;
 }
-
-export const TOOLS = [
+const TOOLS = [
   {
     name: "page.read",
-    description:
-      "Read the visible main content of a tab and return it as Markdown. Use this to understand an article, Canvas page, documentation, or document. Falls back to the whole body when no article container is found, and includes open shadow roots and same-origin iframes. Prefer this over snapshot when you need text, not controls.",
+    description: "Read the visible main content of a tab and return it as Markdown. Use this to understand an article, Canvas page, documentation, or document. Falls back to the whole body when no article container is found, and includes open shadow roots and same-origin iframes. Prefer this over snapshot when you need text, not controls.",
     risk: "read",
     needsPage: true,
     parameters: {
@@ -97,36 +81,41 @@ export const TOOLS = [
       properties: {
         tabId: { type: "integer", description: "Tab id from browser.tabs. Omit for the active tab." },
         selector: { type: "string", description: "Optional CSS selector to read only that subtree." },
-        maxChars: { type: "integer", description: "Character cap, 1000-60000. Default from settings." },
-      },
+        maxChars: { type: "integer", description: "Character cap, 1000-60000. Default from settings." }
+      }
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
-      const cap = ctx.small ? Math.min(6000, ctx.settings.maxPageChars) : ctx.settings.maxPageChars;
+      const cap = ctx.small ? Math.min(6e3, ctx.settings.maxPageChars) : ctx.settings.maxPageChars;
       const res = await callPage(tab, "read", {
         selector: args.selector,
-        maxChars: args.maxChars ?? cap,
+        maxChars: args.maxChars ?? cap
       });
       if (!res.markdown) {
-        return `The page has no readable text in the main container (it may be a JavaScript app or a PDF).\nURL: ${res.url}\nTry page.snapshot to see the controls, or scroll and read again.`;
+        return `The page has no readable text in the main container (it may be a JavaScript app or a PDF).
+URL: ${res.url}
+Try page.snapshot to see the controls, or scroll and read again.`;
       }
       return clip(
-        `TITLE: ${res.title}\nURL: ${res.url}\nWORDS: ${res.words}${res.truncated ? " (truncated)" : ""}\n\n${res.markdown}`
+        `TITLE: ${res.title}
+URL: ${res.url}
+WORDS: ${res.words}${res.truncated ? " (truncated)" : ""}
+
+${res.markdown}`
       );
-    },
+    }
   },
   {
     name: "page.snapshot",
-    description:
-      "Outline a tab: headings plus every clickable or editable element with a stable ref (e12), including open shadow roots and same-origin iframes. Use the refs with page.click, page.type and page.select. Always snapshot before interacting, and again after the page changes.",
+    description: "Outline a tab: headings plus every clickable or editable element with a stable ref (e12), including open shadow roots and same-origin iframes. Use the refs with page.click, page.type and page.select. Always snapshot before interacting, and again after the page changes.",
     risk: "read",
     needsPage: true,
     parameters: {
       type: "object",
       properties: {
         tabId: { type: "integer" },
-        maxElements: { type: "integer", description: "20-400, default 200." },
-      },
+        maxElements: { type: "integer", description: "20-400, default 200." }
+      }
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
@@ -135,13 +124,13 @@ export const TOOLS = [
       const parts = [
         `TITLE: ${res.title}`,
         `URL: ${res.url}`,
-        res.outline.length ? `PAGE OUTLINE:\n${res.outline.join("\n")}` : "",
-        res.elements.length
-          ? `INTERACTIVE ELEMENTS (${res.elements.length} of ${res.total}):\n${res.elements.join("\n")}`
-          : "No interactive elements found. The page may still be loading.",
+        res.outline.length ? `PAGE OUTLINE:
+${res.outline.join("\n")}` : "",
+        res.elements.length ? `INTERACTIVE ELEMENTS (${res.elements.length} of ${res.total}):
+${res.elements.join("\n")}` : "No interactive elements found. The page may still be loading."
       ];
       return clip(parts.filter(Boolean).join("\n\n"));
-    },
+    }
   },
   {
     name: "page.links",
@@ -152,9 +141,9 @@ export const TOOLS = [
       type: "object",
       properties: {
         tabId: { type: "integer" },
-        filter: { type: "string", description: "Regex matched against URL and link text, e.g. \"pdf|syllabus\"." },
-        limit: { type: "integer", description: "5-500, default 200." },
-      },
+        filter: { type: "string", description: 'Regex matched against URL and link text, e.g. "pdf|syllabus".' },
+        limit: { type: "integer", description: "5-500, default 200." }
+      }
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
@@ -166,8 +155,9 @@ export const TOOLS = [
         throw e;
       }
       if (!res.links.length) return `No links matched on ${res.url}.`;
-      return clip(`LINKS on ${res.url} (${res.links.length}):\n` + res.links.map((l) => `- ${l.text || "(no text)"} — ${l.href}`).join("\n"));
-    },
+      return clip(`LINKS on ${res.url} (${res.links.length}):
+` + res.links.map((l) => `- ${l.text || "(no text)"} \u2014 ${l.href}`).join("\n"));
+    }
   },
   {
     name: "page.click",
@@ -178,9 +168,9 @@ export const TOOLS = [
       type: "object",
       properties: {
         ref: { type: "string", description: "Element ref such as e12." },
-        tabId: { type: "integer" },
+        tabId: { type: "integer" }
       },
-      required: ["ref"],
+      required: ["ref"]
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
@@ -189,21 +179,21 @@ export const TOOLS = [
       await sleep(900);
       const after = await browser.tabs.get(tab.id).catch(() => tab);
       return `Clicked ${res.ref} ${JSON.stringify(res.label)}. ${await pageChange(after, before, tab.id)}`;
-    },
+    }
   },
   {
     name: "page.clickText",
-    description: "Click the first visible button or link whose text matches, without a snapshot or ref. This is the most reliable way for small models to click \"Sign in\", \"Next\", \"Submit\" or a menu item.",
+    description: 'Click the first visible button or link whose text matches, without a snapshot or ref. This is the most reliable way for small models to click "Sign in", "Next", "Submit" or a menu item.',
     risk: "act",
     needsPage: true,
     parameters: {
       type: "object",
       properties: {
-        text: { type: "string", description: "Visible label, e.g. \"Next\" or \"Download all\"." },
+        text: { type: "string", description: 'Visible label, e.g. "Next" or "Download all".' },
         exact: { type: "boolean", description: "Require the whole label to match. Default false." },
-        tabId: { type: "integer" },
+        tabId: { type: "integer" }
       },
-      required: ["text"],
+      required: ["text"]
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
@@ -212,7 +202,7 @@ export const TOOLS = [
       await sleep(900);
       const after = await browser.tabs.get(tab.id).catch(() => tab);
       return `Clicked ${res.ref} ${JSON.stringify(res.label)}. ${await pageChange(after, before, tab.id)}`;
-    },
+    }
   },
   {
     name: "page.clickAt",
@@ -224,9 +214,9 @@ export const TOOLS = [
       properties: {
         x: { type: "integer", description: "X in the screenshot, from the left edge." },
         y: { type: "integer", description: "Y in the screenshot, from the top edge." },
-        tabId: { type: "integer" },
+        tabId: { type: "integer" }
       },
-      required: ["x", "y"],
+      required: ["x", "y"]
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
@@ -235,7 +225,7 @@ export const TOOLS = [
       await sleep(700);
       const after = await browser.tabs.get(tab.id).catch(() => tab);
       return `Clicked ${res.ref} <${res.tag}> ${JSON.stringify(res.label)} at ${res.x},${res.y}. ${await pageChange(after, before, tab.id)}`;
-    },
+    }
   },
   {
     name: "page.query",
@@ -249,8 +239,8 @@ export const TOOLS = [
         text: { type: "string", description: "Case-insensitive substring of the visible label." },
         role: { type: "string", description: "ARIA role or tag, e.g. button, link, textbox." },
         limit: { type: "integer", description: "1-200, default 50." },
-        tabId: { type: "integer" },
-      },
+        tabId: { type: "integer" }
+      }
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
@@ -258,11 +248,12 @@ export const TOOLS = [
         selector: args.selector,
         text: args.text,
         role: args.role,
-        limit: args.limit,
+        limit: args.limit
       });
       if (!res.items.length) return `No visible controls matched on ${res.url}. Try page.snapshot.`;
-      return clip(`MATCHES on ${res.url} (${res.count}):\n${lines(res.items)}`);
-    },
+      return clip(`MATCHES on ${res.url} (${res.count}):
+${lines(res.items)}`);
+    }
   },
   {
     name: "page.fill",
@@ -282,15 +273,15 @@ export const TOOLS = [
               placeholder: { type: "string" },
               name: { type: "string", description: "The HTML name attribute." },
               value: { type: "string" },
-              clear: { type: "boolean", description: "false appends instead of replacing." },
+              clear: { type: "boolean", description: "false appends instead of replacing." }
             },
-            required: ["value"],
-          },
+            required: ["value"]
+          }
         },
         submit: { type: "boolean" },
-        tabId: { type: "integer" },
+        tabId: { type: "integer" }
       },
-      required: ["fields"],
+      required: ["fields"]
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
@@ -302,7 +293,7 @@ export const TOOLS = [
       if (bad.length) parts.push(`Not filled: ${bad.map((r) => `${r.field} (${r.error})`).join("; ")}`);
       if (res.submitted) parts.push(await pageChange(await browser.tabs.get(tab.id).catch(() => tab), tab.url, tab.id));
       return parts.join("\n");
-    },
+    }
   },
   {
     name: "page.press",
@@ -314,16 +305,16 @@ export const TOOLS = [
       properties: {
         key: { type: "string", description: "Enter, Tab, Escape, Backspace or an arrow key." },
         ref: { type: "string", description: "Optional field or element to focus first." },
-        tabId: { type: "integer" },
+        tabId: { type: "integer" }
       },
-      required: ["key"],
+      required: ["key"]
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
       const res = await callPage(tab, "press", { key: args.key, ref: args.ref });
       await sleep(500);
       return `Pressed ${res.key} on ${res.target}${res.submitted ? " and submitted the form" : ""}.`;
-    },
+    }
   },
   {
     name: "page.wait",
@@ -337,8 +328,8 @@ export const TOOLS = [
         selector: { type: "string" },
         gone: { type: "boolean", description: "Wait for the text or selector to disappear." },
         timeoutMs: { type: "integer", description: "200-30000, default 6000." },
-        tabId: { type: "integer" },
-      },
+        tabId: { type: "integer" }
+      }
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
@@ -347,10 +338,10 @@ export const TOOLS = [
         text: args.text,
         selector: args.selector,
         gone: args.gone,
-        timeoutMs: args.timeoutMs,
+        timeoutMs: args.timeoutMs
       });
       return `Wait satisfied after ${res.elapsed} ms: ${res.state}.`;
-    },
+    }
   },
   {
     name: "page.screenshot",
@@ -362,8 +353,8 @@ export const TOOLS = [
       properties: {
         format: { type: "string", enum: ["jpeg", "png"], description: "Default jpeg." },
         quality: { type: "integer", description: "JPEG quality 20-95, default 60." },
-        tabId: { type: "integer" },
-      },
+        tabId: { type: "integer" }
+      }
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
@@ -372,16 +363,16 @@ export const TOOLS = [
       try {
         dataUrl = await browser.tabs.captureTab(tab.id, {
           format,
-          quality: Math.min(95, Math.max(20, Number(args.quality) || 60)),
+          quality: Math.min(95, Math.max(20, Number(args.quality) || 60))
         });
       } catch (err) {
         throw new Error(`Firefox could not capture this tab (${err.message}). Some pages and windows block capture.`);
       }
       if (!dataUrl) throw new Error("The capture was empty. Try again after the page finishes loading.");
       ctx.session.lastImage = { dataUrl, at: Date.now(), tabId: tab.id, format };
-      const kb = Math.round((dataUrl.length * 3) / 4 / 1024);
+      const kb = Math.round(dataUrl.length * 3 / 4 / 1024);
       return `Captured [${tab.id}] ${tab.title || ""} (${format}, about ${kb} KB). The image is attached to your next message; describe what you see before acting.`;
-    },
+    }
   },
   {
     name: "page.type",
@@ -395,9 +386,9 @@ export const TOOLS = [
         text: { type: "string" },
         submit: { type: "boolean", description: "Submit the form or press Enter after typing." },
         clear: { type: "boolean", description: "false appends instead of replacing." },
-        tabId: { type: "integer" },
+        tabId: { type: "integer" }
       },
-      required: ["ref", "text"],
+      required: ["ref", "text"]
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
@@ -405,11 +396,11 @@ export const TOOLS = [
         ref: args.ref,
         text: args.text,
         submit: Boolean(args.submit),
-        clear: args.clear !== false,
+        clear: args.clear !== false
       });
       await sleep(args.submit ? 800 : 150);
       return `Typed ${res.valueLength} characters into ${args.ref}${res.submitted ? " and submitted" : ""}. ${res.submitted ? "Snapshot again to check the result." : ""}`.trim();
-    },
+    }
   },
   {
     name: "page.select",
@@ -421,15 +412,15 @@ export const TOOLS = [
       properties: {
         ref: { type: "string" },
         value: { type: "string" },
-        tabId: { type: "integer" },
+        tabId: { type: "integer" }
       },
-      required: ["ref", "value"],
+      required: ["ref", "value"]
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
       const res = await callPage(tab, "select", { ref: args.ref, value: args.value });
       return `Selected ${JSON.stringify(res.label)} (value ${JSON.stringify(res.value)}) in ${args.ref}.`;
-    },
+    }
   },
   {
     name: "page.scroll",
@@ -442,22 +433,19 @@ export const TOOLS = [
         direction: { type: "string", enum: ["down", "up"] },
         amount: { type: "integer", description: "Pixels, 100-5000, default 700." },
         ref: { type: "string", description: "Scroll this element into view instead." },
-        tabId: { type: "integer" },
-      },
+        tabId: { type: "integer" }
+      }
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
       const res = await callPage(tab, "scroll", args);
       await sleep(400);
-      return args.ref
-        ? `Scrolled ${args.ref} into view.`
-        : `Scrolled ${res.scrolledBy > 0 ? "down" : "up"} to y=${res.y} of ${res.height}.`;
-    },
+      return args.ref ? `Scrolled ${args.ref} into view.` : `Scrolled ${res.scrolledBy > 0 ? "down" : "up"} to y=${res.y} of ${res.height}.`;
+    }
   },
   {
     name: "page.fetch",
-    description:
-      "Make an HTTP request from inside a tab, using that site's cookies and session (same-origin). This is the fastest way to read a site's own JSON API, e.g. Canvas /api/v1. Returns status, Link header, rate-limit headers and the body. Use pick to keep only the fields you need.",
+    description: "Make an HTTP request from inside a tab, using that site's cookies and session (same-origin). This is the fastest way to read a site's own JSON API, e.g. Canvas /api/v1. Returns status, Link header, rate-limit headers and the body. Use pick to keep only the fields you need.",
     risk: "read",
     needsPage: true,
     parameters: {
@@ -467,11 +455,11 @@ export const TOOLS = [
         method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], description: "Default GET." },
         body: { type: "string", description: "Raw body for POST/PUT/PATCH; JSON string." },
         headers: { type: "object", description: "Optional extra headers." },
-        pick: { type: "array", items: { type: "string" }, description: "Dot paths to project from each object, e.g. [\"id\",\"name\",\"due_at\"]." },
+        pick: { type: "array", items: { type: "string" }, description: 'Dot paths to project from each object, e.g. ["id","name","due_at"].' },
         maxChars: { type: "integer", description: "Default 20000." },
-        tabId: { type: "integer" },
+        tabId: { type: "integer" }
       },
-      required: ["url"],
+      required: ["url"]
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
@@ -479,25 +467,27 @@ export const TOOLS = [
         url: args.url,
         method: args.method || "GET",
         body: args.body,
-        headers: args.headers,
+        headers: args.headers
       });
       const method = (args.method || "GET").toUpperCase();
       const head = `${method} ${shortUrl(res.url)} -> ${res.status}${res.contentType ? " " + res.contentType.split(";")[0] : ""}${formatRate(res.rate)}`;
       let body;
-      if (res.json !== undefined) {
+      if (res.json !== void 0) {
         body = json(project(res.json, args.pick));
       } else {
         body = res.text || "(empty body)";
       }
-      const extra = res.link ? `\nLink: ${res.link}` : "";
+      const extra = res.link ? `
+Link: ${res.link}` : "";
       const same = res.sameOrigin ? "" : "\nNOTE: this was a cross-origin request; cookies may be missing and the server must allow CORS.";
-      return clip(`${head}${extra}${same}\n\n${body}`, args.maxChars || 20000);
-    },
+      return clip(`${head}${extra}${same}
+
+${body}`, args.maxChars || 2e4);
+    }
   },
   {
     name: "page.fetchAll",
-    description:
-      "Fetch a paginated JSON collection using the Link rel=\"next\" header (Canvas and most REST APIs) and return one JSON object per line. Use for course lists, assignments, modules, files and enrollments. Throttles between pages.",
+    description: 'Fetch a paginated JSON collection using the Link rel="next" header (Canvas and most REST APIs) and return one JSON object per line. Use for course lists, assignments, modules, files and enrollments. Throttles between pages.',
     risk: "read",
     needsPage: true,
     parameters: {
@@ -507,42 +497,43 @@ export const TOOLS = [
         pick: { type: "array", items: { type: "string" }, description: "Fields to keep from each item." },
         maxPages: { type: "integer", description: "1-20, default 8." },
         maxChars: { type: "integer", description: "Default 20000." },
-        tabId: { type: "integer" },
+        tabId: { type: "integer" }
       },
-      required: ["url"],
+      required: ["url"]
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
-      const maxChars = args.maxChars || 20000;
+      const maxChars = args.maxChars || 2e4;
       const result = await fetchAllRows(tab, args.url, {
         pick: args.pick,
         maxPages: args.maxPages,
-        maxChars,
+        maxChars
       });
       if (!result.rows.length) return `No items returned from ${args.url}. ${result.note}`.trim();
-      const header = `FETCHED ${result.rows.length} item(s) from ${result.pages} page(s) for ${shortUrl(args.url)}.` +
-        (result.note ? `\n${result.note}` : "") +
-        (args.pick?.length ? `\nFields: ${args.pick.join(", ")}` : "");
-      return clip(`${header}\n\n${result.text}`, maxChars + 600);
-    },
+      const header = `FETCHED ${result.rows.length} item(s) from ${result.pages} page(s) for ${shortUrl(args.url)}.` + (result.note ? `
+${result.note}` : "") + (args.pick?.length ? `
+Fields: ${args.pick.join(", ")}` : "");
+      return clip(`${header}
+
+${result.text}`, maxChars + 600);
+    }
   },
   {
     name: "web.fetch",
-    description:
-      "Fetch a public http(s) URL from the extension (no cookies, no JavaScript, no login) and return its title and readable text. Use for checking public pages or documentation without switching tabs. For logged-in pages use a tab plus page.read.",
+    description: "Fetch a public http(s) URL from the extension (no cookies, no JavaScript, no login) and return its title and readable text. Use for checking public pages or documentation without switching tabs. For logged-in pages use a tab plus page.read.",
     risk: "read",
     parameters: {
       type: "object",
       properties: {
         url: { type: "string" },
-        maxChars: { type: "integer", description: "Default 8000, max 30000." },
+        maxChars: { type: "integer", description: "Default 8000, max 30000." }
       },
-      required: ["url"],
+      required: ["url"]
     },
     async run(args) {
       const u = requirePublicUrl(args.url);
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 20000);
+      const timer = setTimeout(() => controller.abort(), 2e4);
       let res;
       let raw;
       try {
@@ -550,9 +541,9 @@ export const TOOLS = [
           headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0", Accept: "text/html,application/json,text/plain;q=0.9,*/*;q=0.8" },
           redirect: "follow",
           credentials: "omit",
-          signal: controller.signal,
+          signal: controller.signal
         });
-        raw = (await res.text()).slice(0, 600000);
+        raw = (await res.text()).slice(0, 6e5);
       } catch (e) {
         if (e?.name === "AbortError") throw new Error(`Timed out after 20s fetching ${u.href}.`);
         throw new Error(`Could not fetch ${u.href}: ${e.message}`);
@@ -560,14 +551,21 @@ export const TOOLS = [
         clearTimeout(timer);
       }
       const ct = res.headers.get("content-type") || "";
-      const max = Math.min(30000, Math.max(1000, Number(args.maxChars) || 8000));
+      const max = Math.min(3e4, Math.max(1e3, Number(args.maxChars) || 8e3));
       if (/json/i.test(ct)) {
         let pretty = raw;
-        try { pretty = JSON.stringify(JSON.parse(raw), null, 1); } catch {}
-        return clip(`${u.href} -> ${res.status} (json, no cookies)\n\n${pretty}`, max);
+        try {
+          pretty = JSON.stringify(JSON.parse(raw), null, 1);
+        } catch {
+        }
+        return clip(`${u.href} -> ${res.status} (json, no cookies)
+
+${pretty}`, max);
       }
       if (!/html?/i.test(ct)) {
-        return clip(`${u.href} -> ${res.status} ${ct}\n\n${raw}`, max);
+        return clip(`${u.href} -> ${res.status} ${ct}
+
+${raw}`, max);
       }
       let title = "";
       let text = "";
@@ -579,8 +577,11 @@ export const TOOLS = [
       } catch {
         text = raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
       }
-      return clip(`${u.href} -> ${res.status} (text snapshot, no cookies)\nTITLE: ${title}\n\n${text}`, max);
-    },
+      return clip(`${u.href} -> ${res.status} (text snapshot, no cookies)
+TITLE: ${title}
+
+${text}`, max);
+    }
   },
   {
     name: "browser.tabs",
@@ -589,9 +590,10 @@ export const TOOLS = [
     parameters: { type: "object", properties: {} },
     async run() {
       const tabs = await browser.tabs.query({});
-      const lines = tabs.map((t) => `[${t.id}]${t.active ? " *active*" : ""} ${t.title || "(no title)"} — ${t.url || ""}`);
-      return clip(`OPEN TABS (${tabs.length}):\n${lines.join("\n")}`, 8000);
-    },
+      const lines2 = tabs.map((t) => `[${t.id}]${t.active ? " *active*" : ""} ${t.title || "(no title)"} \u2014 ${t.url || ""}`);
+      return clip(`OPEN TABS (${tabs.length}):
+${lines2.join("\n")}`, 8e3);
+    }
   },
   {
     name: "browser.open",
@@ -601,16 +603,16 @@ export const TOOLS = [
       type: "object",
       properties: {
         url: { type: "string" },
-        active: { type: "boolean", description: "Focus the new tab. Default true." },
+        active: { type: "boolean", description: "Focus the new tab. Default true." }
       },
-      required: ["url"],
+      required: ["url"]
     },
     async run(args) {
       const u = requireHttp(args.url);
       const tab = await browser.tabs.create({ url: u.href, active: args.active !== false });
       const loaded = await waitForLoad(tab.id);
-      return `Opened tab [${loaded.id}] ${loaded.title || ""} — ${loaded.url}`;
-    },
+      return `Opened tab [${loaded.id}] ${loaded.title || ""} \u2014 ${loaded.url}`;
+    }
   },
   {
     name: "browser.switch",
@@ -619,14 +621,15 @@ export const TOOLS = [
     parameters: {
       type: "object",
       properties: { tabId: { type: "integer" } },
-      required: ["tabId"],
+      required: ["tabId"]
     },
     async run(args) {
       const tab = await browser.tabs.get(Number(args.tabId));
       await browser.tabs.update(tab.id, { active: true });
-      await browser.windows.update(tab.windowId, { focused: true }).catch(() => {});
-      return `Switched to [${tab.id}] ${tab.title || ""} — ${tab.url}`;
-    },
+      await browser.windows.update(tab.windowId, { focused: true }).catch(() => {
+      });
+      return `Switched to [${tab.id}] ${tab.title || ""} \u2014 ${tab.url}`;
+    }
   },
   {
     name: "browser.close",
@@ -635,13 +638,13 @@ export const TOOLS = [
     parameters: {
       type: "object",
       properties: { tabId: { type: "integer" } },
-      required: ["tabId"],
+      required: ["tabId"]
     },
     async run(args) {
       const tab = await browser.tabs.get(Number(args.tabId));
       await browser.tabs.remove(tab.id);
       return `Closed tab [${tab.id}] ${tab.title || ""}.`;
-    },
+    }
   },
   {
     name: "browser.download",
@@ -651,21 +654,20 @@ export const TOOLS = [
       type: "object",
       properties: {
         url: { type: "string" },
-        filename: { type: "string" },
+        filename: { type: "string" }
       },
-      required: ["url", "filename"],
+      required: ["url", "filename"]
     },
     async run(args) {
       const u = requireHttp(args.url);
       const filename = safeFilename(args.filename);
       const id = await browser.downloads.download({ url: u.href, filename, conflictAction: "uniquify", saveAs: false });
       return `Download started: ${filename} (download id ${id}).`;
-    },
+    }
   },
   {
     name: "browser.downloadMany",
-    description:
-      "Download many files in one approved batch (up to 200). Use after building a manifest, and include the course/module in each filename. Returns per-file queued/failed status. This is the correct tool for \"download every material in every module\".",
+    description: 'Download many files in one approved batch (up to 200). Use after building a manifest, and include the course/module in each filename. Returns per-file queued/failed status. This is the correct tool for "download every material in every module".',
     risk: "write",
     parameters: {
       type: "object",
@@ -676,11 +678,11 @@ export const TOOLS = [
           items: {
             type: "object",
             properties: { url: { type: "string" }, filename: { type: "string" } },
-            required: ["url", "filename"],
-          },
-        },
+            required: ["url", "filename"]
+          }
+        }
       },
-      required: ["files"],
+      required: ["files"]
     },
     async run(args, ctx) {
       const files = Array.isArray(args.files) ? args.files.slice(0, 200) : [];
@@ -699,8 +701,8 @@ export const TOOLS = [
       let ok = 0;
       for (let i = 0; i < prepared.length; i += 4) {
         const batch = prepared.slice(i, i + 4);
-        const settled = await Promise.allSettled(batch.map((f) =>
-          browser.downloads.download({ url: f.url, filename: f.filename, conflictAction: "uniquify", saveAs: false })
+        const settled = await Promise.allSettled(batch.map(
+          (f) => browser.downloads.download({ url: f.url, filename: f.filename, conflictAction: "uniquify", saveAs: false })
         ));
         settled.forEach((s, j) => {
           if (s.status === "fulfilled") {
@@ -711,13 +713,13 @@ export const TOOLS = [
           }
         });
       }
-      const lines = [
+      const lines2 = [
         `Queued ${ok} of ${files.length} download(s)${files.length > 200 ? " (capped at 200 per call)" : ""}.`,
         ...results.slice(0, 200),
-        ...skipped.map((s) => `SKIP ${s}`),
+        ...skipped.map((s) => `SKIP ${s}`)
       ];
-      return clip(lines.join("\n"), 14000);
-    },
+      return clip(lines2.join("\n"), 14e3);
+    }
   },
   {
     name: "files.write",
@@ -728,80 +730,67 @@ export const TOOLS = [
       properties: {
         filename: { type: "string" },
         content: { type: "string" },
-        mimeType: { type: "string", description: "Default text/markdown." },
+        mimeType: { type: "string", description: "Default text/markdown." }
       },
-      required: ["filename", "content"],
+      required: ["filename", "content"]
     },
     async run(args) {
       const filename = safeFilename(args.filename, "FoxAgent/note.md");
       const content = String(args.content ?? "");
-      if (content.length > 4_000_000) throw new Error("File is too large (4 MB limit). Split it into parts.");
+      if (content.length > 4e6) throw new Error("File is too large (4 MB limit). Split it into parts.");
       const blob = new Blob([content], { type: args.mimeType || "text/markdown;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       try {
         const id = await browser.downloads.download({ url, filename, conflictAction: "uniquify", saveAs: false });
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        setTimeout(() => URL.revokeObjectURL(url), 6e4);
         return `Saved ${filename} (${content.length} chars, download id ${id}).`;
       } catch (e) {
         URL.revokeObjectURL(url);
         throw new Error(`Could not save file: ${e.message}`);
       }
-    },
+    }
   },
   {
     name: "task.note",
-    description:
-      "Append a line to the task scratchpad. The scratchpad is shown to you in every request, so use it for a checklist, progress, ids, filenames and anything you must not forget during a long task. Keep it terse. It survives page loads and long conversations.",
+    description: "Append a line to the task scratchpad. The scratchpad is shown to you in every request, so use it for a checklist, progress, ids, filenames and anything you must not forget during a long task. Keep it terse. It survives page loads and long conversations.",
     risk: "read",
     parameters: {
       type: "object",
-      properties: { text: { type: "string", description: "Short line, e.g. \"[x] course 42 modules fetched; files pending\"." } },
-      required: ["text"],
+      properties: { text: { type: "string", description: 'Short line, e.g. "[x] course 42 modules fetched; files pending".' } },
+      required: ["text"]
     },
     async run(args, ctx) {
       const total = addNote(ctx.session, args.text);
       return `Noted. Scratchpad is now ${total} characters.`;
-    },
+    }
   },
   {
     name: "ui.ask",
-    description:
-      "Ask the user a question and wait for their answer, inside the sidebar. Use when a task is ambiguous (which course? include pages or only files?), before a large download, or to request a manual step such as logging in. Do not ask trivia you can observe.",
+    description: "Ask the user a question and wait for their answer, inside the sidebar. Use when a task is ambiguous (which course? include pages or only files?), before a large download, or to request a manual step such as logging in. Do not ask trivia you can observe.",
     risk: "read",
     parameters: {
       type: "object",
       properties: {
         question: { type: "string" },
-        options: { type: "array", items: { type: "string" }, description: "Optional suggested answers." },
+        options: { type: "array", items: { type: "string" }, description: "Optional suggested answers." }
       },
-      required: ["question"],
+      required: ["question"]
     },
     async run(args, ctx) {
       const answer = await ctx.ask({ question: args.question, options: args.options || [] });
       return `User answered: ${answer || "(no answer)"}`;
-    },
-  },
+    }
+  }
 ];
-
-export const TOOL_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
-
-export function findTool(name) {
+const TOOL_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
+function findTool(name) {
   const exact = TOOL_BY_NAME.get(name);
   if (exact) return exact;
   const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   const wanted = norm(name);
   return TOOLS.find((t) => norm(t.name) === wanted) || null;
 }
-
-/*
- * Site-aware menu. Small models do better with a short, ordered list, and
- * Canvas tools only make sense on a Canvas tab (or when one is open).
- */
-/*
- * Site-aware menu. Small models do better with a short, ordered list, and
- * screenshot is only useful when the model can receive an image.
- */
-export function toolsFor({ small = false, vision = false } = {}) {
+function toolsFor({ small = false, vision = false } = {}) {
   const skip = new Set(small ? ["page.links", "browser.switch"] : []);
   if (!vision) {
     skip.add("page.screenshot");
@@ -809,7 +798,6 @@ export function toolsFor({ small = false, vision = false } = {}) {
   }
   return TOOLS.filter((t) => !skip.has(t.name));
 }
-
 function distance(a, b) {
   const row = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
@@ -823,27 +811,27 @@ function distance(a, b) {
   }
   return row[b.length];
 }
-
-export function suggestTools(name, limit = 3) {
+function suggestTools(name, limit = 3) {
   const wanted = String(name || "").toLowerCase();
-  return TOOLS
-    .map((t) => ({ name: t.name, d: distance(wanted, t.name.toLowerCase()) }))
-    .sort((a, b) => a.d - b.d)
-    .slice(0, limit)
-    .map((t) => t.name);
+  return TOOLS.map((t) => ({ name: t.name, d: distance(wanted, t.name.toLowerCase()) })).sort((a, b) => a.d - b.d).slice(0, limit).map((t) => t.name);
 }
-
-export function summarizeArgs(args) {
+function summarizeArgs(args) {
   const entries = Object.entries(args || {}).filter(([k]) => k !== "tabId");
   if (!entries.length) return "";
-  return entries
-    .map(([k, v]) => {
-      let s;
-      if (typeof v === "string") s = v;
-      else if (Array.isArray(v)) s = `${v.length} item(s)`;
-      else s = JSON.stringify(v);
-      s = s.replace(/\s+/g, " ");
-      return `${k}=${s.length > 70 ? s.slice(0, 70) + "…" : s}`;
-    })
-    .join(", ");
+  return entries.map(([k, v]) => {
+    let s;
+    if (typeof v === "string") s = v;
+    else if (Array.isArray(v)) s = `${v.length} item(s)`;
+    else s = JSON.stringify(v);
+    s = s.replace(/\s+/g, " ");
+    return `${k}=${s.length > 70 ? s.slice(0, 70) + "\u2026" : s}`;
+  }).join(", ");
 }
+export {
+  TOOLS,
+  TOOL_BY_NAME,
+  findTool,
+  suggestTools,
+  summarizeArgs,
+  toolsFor
+};

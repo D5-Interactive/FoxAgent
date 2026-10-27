@@ -1,16 +1,9 @@
-/*
- * Tab injection + page messaging.
- */
-
 const injected = new Set();
-
 const RESTRICTED = /^(about|chrome|moz-extension|resource|view-source|jar|addons):/i;
-
-export function isRestricted(url) {
+function isRestricted(url) {
   return !url || RESTRICTED.test(url) || url.startsWith("https://addons.mozilla.org");
 }
-
-export async function activeTab(windowId) {
+async function activeTab(windowId) {
   const query = { active: true };
   if (windowId != null) query.windowId = Number(windowId);
   else query.currentWindow = true;
@@ -18,12 +11,7 @@ export async function activeTab(windowId) {
   if (!tab) throw new Error("No active tab in this window.");
   return tab;
 }
-
-/*
- * An explicit tabId always wins. Otherwise a run stays pinned to the tab that
- * started it: switching tabs must not retarget an in-flight task.
- */
-export async function resolveTab(tabId, pinnedTabId) {
+async function resolveTab(tabId, pinnedTabId) {
   const target = tabId ?? pinnedTabId;
   if (target != null) {
     try {
@@ -34,7 +22,6 @@ export async function resolveTab(tabId, pinnedTabId) {
   }
   return activeTab();
 }
-
 async function ping(tabId) {
   try {
     const res = await browser.tabs.sendMessage(tabId, { __foxagent: true, op: "ping" });
@@ -43,8 +30,7 @@ async function ping(tabId) {
     return false;
   }
 }
-
-export async function ensureInjected(tab) {
+async function ensureInjected(tab) {
   if (!tab?.id) throw new Error("This tab cannot be controlled.");
   if (isRestricted(tab.url)) {
     throw new Error(`Firefox doesn't let extensions run on ${tab.url || "this page"}. Open a normal http(s) page.`);
@@ -56,7 +42,7 @@ export async function ensureInjected(tab) {
   try {
     await browser.scripting.executeScript({
       target: { tabId: tab.id },
-      files: ["src/content/agent.js"],
+      files: ["src/content/agent.js"]
     });
   } catch (err) {
     throw new Error(`Could not attach to the page: ${err.message}`);
@@ -70,8 +56,7 @@ export async function ensureInjected(tab) {
   }
   throw new Error("The page loaded FoxAgent's bridge but did not respond. Reload the tab and try again.");
 }
-
-export async function callPage(tab, op, args = {}) {
+async function callPage(tab, op, args = {}) {
   await ensureInjected(tab);
   let res;
   try {
@@ -84,13 +69,11 @@ export async function callPage(tab, op, args = {}) {
   if (!res.ok) throw new Error(res.error || "Page operation failed.");
   return res.result;
 }
-
-export function tabInfo(tab) {
+function tabInfo(tab) {
   if (!tab) return null;
   return { id: tab.id, url: tab.url, title: tab.title, active: tab.active };
 }
-
-export async function waitForLoad(tabId, timeoutMs = 15000) {
+async function waitForLoad(tabId, timeoutMs = 15e3) {
   const tab = await browser.tabs.get(tabId);
   if (tab.status === "complete") return tab;
   return await new Promise((resolve) => {
@@ -109,11 +92,20 @@ export async function waitForLoad(tabId, timeoutMs = 15000) {
     browser.tabs.onUpdated.addListener(listener);
   });
 }
-
-export function hostOf(url) {
+function hostOf(url) {
   try {
     return new URL(url).hostname;
   } catch {
     return "";
   }
 }
+export {
+  activeTab,
+  callPage,
+  ensureInjected,
+  hostOf,
+  isRestricted,
+  resolveTab,
+  tabInfo,
+  waitForLoad
+};

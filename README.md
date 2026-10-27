@@ -159,7 +159,7 @@ FoxAgent/
 ├── icons/                     # 16, 32, 48 and 96 px
 ├── packs/                     # Site packs, catalog, SDK and template
 │   ├── index.json
-│   ├── canvas/
+│   ├── canvas/                # Tools, playbook and long description
 │   ├── gmail/
 │   ├── outlook/
 │   ├── gdrive/
@@ -177,6 +177,8 @@ FoxAgent/
 │   │   ├── agent.js           # Tool loop, compaction, small-model profile
 │   │   ├── providers.js       # OpenAI and Anthropic adapters
 │   │   ├── tools.js           # Core tools: read, snapshot, click, fill, wait, screenshot
+│   │   ├── rows.js            # Paginated JSON helpers shared with packs
+│   │   ├── hosts.js           # Host pattern matching for packs
 │   │   ├── prompt.js          # Full and compact system prompts
 │   │   ├── vision.js          # Model id to image support
 │   │   ├── settings-guard.js  # Whitelist for sidebar settings replies
@@ -189,8 +191,7 @@ FoxAgent/
 │       ├── sidebar.js         # UI logic, no innerHTML
 │       └── sidebar.css        # Responsive, themed
 └── docs/
-    ├── DESIGN.md              # Architecture and safety boundaries
-    └── CANVAS.md              # Canvas pack playbook
+    └── DESIGN.md              # Architecture and safety boundaries
 ```
 
 ---

@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-"""
-Real DOM checks for the content bridge.
-
-Run with:
-    uv run --with playwright python tests/page_bridge.py
-
-If Playwright cannot find Chromium, point it at one:
-    PLAYWRIGHT_CHROMIUM=/path/to/chrome-headless-shell uv run --with playwright python tests/page_bridge.py
-"""
-
 import functools
 import http.server
 import os
@@ -22,13 +11,11 @@ ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_DIR = ROOT / "tests" / "fixtures"
 BRIDGE = ROOT / "src" / "content" / "agent.js"
 
-
 def serve():
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(FIXTURE_DIR))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
-
 
 def main():
     server = serve()
@@ -152,7 +139,6 @@ def main():
         return 1
     print("\nALL BRIDGE CHECKS PASSED")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
