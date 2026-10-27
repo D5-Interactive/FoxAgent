@@ -5,6 +5,14 @@ tab. `page.fetch` and `page.fetchAll` run in that tab's origin, so the session
 cookie travels with the request and FoxAgent never stores your Canvas password or
 token. The same recipes also work with an institutional Canvas host.
 
+The agent's first stop on a Canvas tab is the Canvas pack: install it once from
+the Packs tab, then the read-only shortcuts `canvas.todo` (to-do plus upcoming
+events), `canvas.courses` (ids and scores), `canvas.assignments` (one course id,
+one bucket) and `canvas.modules` (module and item names) are in the menu. Those
+tools wrap the endpoints below, so small models do not have to remember paths.
+`page.fetch` and `page.fetchAll` remain available for anything the pack does not
+cover.
+
 This page is the practical playbook: what the API returns, how each task is
 carried out, where files land, and what to do when a school blocks API access.
 

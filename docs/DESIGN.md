@@ -13,8 +13,7 @@ Goals:
   cloud API providers.
 - Read real, logged-in pages and act on them through stable element refs.
 - Turn pages and documents into Markdown the user can keep.
-- Run repeatable jobs, especially a Canvas weekly workflow and bulk material
-  downloads.
+- Run repeatable jobs, including site workflows and bulk material downloads.
 - Keep the user in control: approvals, dry run, allowlists, audit log, abort.
 
 Non-goals for 0.1:
@@ -32,12 +31,16 @@ Firefox MV3 extension with three contexts:
 ```
 sidebar (src/sidebar)                background event page (src/background)
 ┌─────────────────────────┐  port    ┌──────────────────────────────────────┐
-│ Chat / Tasks / Activity │◄────────►│ main.js   routing, approvals, models │
-│ / Models                │ messages │ agent.js  loop, compaction, protocol  │
-│ settings form           │          │ tools.js  19 tools + risk levels      │
-│ safe Markdown renderer  │          │ providers.js  OpenAI + Anthropic      │
-└─────────────────────────┘          │ prompt.js / recipes.js / store.js     │
-                                     │ page.js   injection + tab messaging   │
+│ Chat / Tasks / Packs    │◄────────►│ main.js   routing, sessions, updates │
+│ / Activity / Models     │ messages │ sessions.js  one run per tab         │
+│ settings form           │          │ agent.js  loop, compaction, protocol  │
+│ safe Markdown renderer  │          │ tools.js  core tools and risk levels  │
+└─────────────────────────┘          │ packs.js  catalog, modules, prompts  │
+                                     │ updates.js  GitHub release check     │
+                                     │ providers.js  OpenAI + Anthropic     │
+                                     │ prompt.js / recipes.js / store.js    │
+                                     │ settings-guard.js  reply validation  │
+                                     │ page.js   injection + tab messaging  │
                                      └───────────────┬──────────────────────┘
                                                      │ tabs.sendMessage
                                      ┌───────────────▼──────────────────────┐
@@ -49,8 +52,11 @@ sidebar (src/sidebar)                background event page (src/background)
 
 The background page is an event page, not a service worker: Firefox MV3 still
 allows DOM APIs there, and `Blob`, `URL.createObjectURL` and `DOMParser` are used
-for log export and `web.fetch`. State lives in memory while the sidebar port is
-open and is persisted to `browser.storage.local` after each turn.
+for log export and `web.fetch`. Tab conversations live in `storage.session`
+(cleared with the browser, so persisted tab ids stay valid) and are written after
+each step. While the sidebar's port is open the event page stays alive; if the
+sidebar is closed for long enough, Firefox may suspend it and a run pauses.
+Switching tabs keeps the sidebar open, so work continues.
 
 ### Why two provider adapters
 
@@ -80,18 +86,89 @@ values (`tool_use` → `tool_calls`, `max_tokens` → `length`).
 
 `runAgent` in `agent.js`:
 
-1. Resolve the active tab for the system prompt.
+1. Resolve the session's pinned tab for the system prompt and tools (never the
+   active tab, so switching tabs cannot retarget a run).
 2. Build provider messages from history, applying a character budget.
-3. Stream a completion, forwarding deltas to the sidebar.
-4. If there are no native calls and the mode allows it, try the JSON fallback.
-5. Record the assistant message and any prose.
-6. Execute calls one at a time (at most six per turn), appending tool results.
-7. Repeat until the model answers without calls, the step limit is reached, or
+3. Pick the tool menu for this step: core tools, enabled packs whose hosts match
+   an open tab, and a shorter core list for small models.
+4. Stream a completion, forwarding deltas to the sidebar.
+5. If there are no native calls and the mode allows it, try the JSON fallback.
+6. Record the assistant message and any prose.
+7. Execute calls one at a time (at most six per turn), appending tool results.
+   A repeated identical call gets a corrective note in its result.
+8. Repeat until the model answers without calls, the step limit is reached, or
    the user stops.
 
-The step limit is user-configurable (default 32). A per-turn cap of six tool
-calls keeps one model reply from turning into a burst of side effects and matches
-what local models can reliably emit.
+The step limit is user-configurable (default 32, capped at 24 for small models).
+A per-turn cap of six tool calls keeps one model reply from turning into a burst
+of side effects and matches what local models can reliably emit.
+
+### Per-tab sessions
+
+`sessions.js` keeps a `Map<tabId, session>`. Each session owns its model history,
+transcript, scratchpad, busy flag, abort controller and pending prompts. Settings,
+model lists and the activity log stay global.
+
+- The sidebar resolves its window's active tab and shows that tab's session. A
+  tab switch is a view swap: transcript, notes, busy state and pending prompts
+  come from the background.
+- A run pins `session.tabId`. Page tools with no `tabId` use the pinned tab, not
+  `activeTab()`. `browser.tabs` and an explicit `tabId` still reach other tabs.
+- Two runs may proceed at once (one per tab); a third is refused with a message.
+  Stopping is per tab; Stop in the sidebar aborts the tab in view.
+- Approvals are owned by the session that requested them. The reply carries only
+  the prompt id, and trusted hosts come from the stored request, never from the
+  UI reply.
+- Closing a tab aborts its run and drops the session. Closing the sidebar does
+  not abort anything: prompts keep their timeouts and re-render when the panel
+  returns.
+- Sessions are capped at 12 per browser run; the oldest idle one is evicted.
+
+`state` and `tab` messages carry the session for the tab in view. Incremental
+events carry `tabId`; the sidebar ignores events for other tabs and only updates
+the session strip ("other tabs working", with an approval marker).
+
+### Small-model profile
+
+`modelSize` parses the model id (4b, 9b, e2b, e4b, 70b). At 12B or less the run
+switches to a compact prompt, a 24-step cap, 60-element snapshots and a 6,000
+character page-read cap. The tool menu drops `page.links` and `browser.switch`,
+and `page.clickText` lets the model click by visible label instead of tracking
+refs. Site work is expressed as pack tools such as `canvas.todo`,
+`canvas.courses`, `canvas.assignments` and `canvas.modules`, so endpoint paths
+and id shapes are code rather than prompt tokens.
+
+### Packs
+
+A pack is a directory under `packs/` with `pack.json`, `tools.js`, `desc.md` and
+`icon.svg`. `packs/index.json` lists the ids that ship in this build.
+
+`packs.js` loads the catalog with `fetch(runtime.getURL(...))`, then reads each
+enabled pack's module from a static registry in `packs/registry.js`. Nothing is
+fetched from the network as code, and there is no dynamic import; the Packs
+panel and the `packs/` directory are the same catalog. Installing a pack adds its id to `settings.packs`, and its
+tools and prompt join the next step.
+
+Host gating is two-level. Tools are offered when any open tab matches the pack's
+`hosts`, so a task can open the site and use the pack on a later step. The prompt
+section appears only when the pinned tab itself matches. `packs/sdk.js` gives
+packs the same page helpers, pagination and clipping rules as core tools.
+
+The Packs panel's check fetches `packs/index.json` from the repository's main
+branch and marks ids that this build does not include. Code from a newer pack
+still arrives with a FoxAgent update.
+
+### Updates
+
+`updates.js` asks `api.github.com/repos/D5-Interactive/FoxAgent/releases/latest`
+and caches the answer for six hours. It compares the release tag with the
+manifest version, picks a zip or xpi asset, and reports the release page.
+
+`autoUpdate` only controls whether the check runs at startup. Firefox installs
+signed add-ons only, so **Update** downloads the asset to
+`Downloads/FoxAgent/updates/` and opens the release page; the extension never
+replaces itself. Dismissing a version stores `dismissedUpdate`, so the banner
+stays away until the next release.
 
 ### History compaction
 
@@ -127,25 +204,52 @@ script: this keeps startup cheap and avoids running on every page until needed.
 
 The bridge exposes one message listener and these operations:
 
-- `snapshot`: heading outline plus visible interactive elements. Each element
-  gets a stable `e12` ref stored in a `Map`. Refs are per tab and go stale after
-  navigation or DOM replacement; the tool returns a clear error and the agent is
-  told to snapshot again.
+- `snapshot`: heading outline plus visible interactive elements, ranked so
+  on-screen buttons and fields survive a small element cap. It walks open shadow
+  roots and same-origin iframe documents, and marks offscreen controls. Each
+  element gets a stable `e12` ref stored in a `Map`. Refs are per tab and go
+  stale after navigation or DOM replacement; the tool returns a clear error and
+  the agent is told to snapshot again.
 - `read`: choose a main-content root (`main`, `article`, role=main, common class
   names) by a score that subtracts navigation/form/link noise, then walk the DOM
   into Markdown. Builds text nodes directly; no HTML string is produced. Code
   fences are protected, whitespace is tidied outside them, tables are capped,
   and small tracking images are skipped.
 - `links`: absolute links with an optional regex filter.
-- `click` / `type` / `select` / `scroll`: act on a ref. Password fields are
-  refused. `type` uses the native value setter so React/Vue inputs see the
-  change, then dispatches `input` and `change`.
+- `query`: find controls by CSS selector, visible text or ARIA role, with refs,
+  labels, values and rectangles.
+- `click` / `clickText` / `clickAt` / `type` / `select` / `scroll`: act on a ref,
+  a visible label for `clickText` (with exact, role and nth options), or a
+  viewport point from the last screenshot for `clickAt`. Password
+  fields are refused. `type` uses the native value setter so React/Vue inputs see
+  the change, then dispatches `input` and `change`.
+- `fill`: fill several fields in one call by ref, label, placeholder or name,
+  optionally submitting the form.
+- `press`: dispatch Enter, Tab, Escape or an arrow key, and submit the enclosing
+  form on Enter.
+- `waitFor`: wait for text to appear or disappear, or for a selector.
 - `fetch`: same-origin (or CORS-permitted) `fetch` with `credentials: "include"`,
   a 45 s timeout, and a body cap. It strips `host`, `origin`, `cookie` and
   `content-length` headers. Returns status, `Link`, rate-limit headers, parsed
   JSON when possible, and a text fallback.
 
-The bridge never uses `eval`, `Function`, or `innerHTML`.
+All cross-realm checks use tag names and the element's own window, so the same
+code works inside iframes. The bridge never uses `eval`, `Function`, or
+`innerHTML`. It ignores messages whose sender is not this extension.
+
+### Vision
+
+`page.screenshot` captures the tab with `browser.tabs.captureTab`, which works
+for a pinned background tab as well as the visible one. The data URL is kept on
+the session, not in the transcript. The next request that can carry images
+attaches it as one user message with a text note, then clears it so every later
+step is not charged for the same picture.
+
+Vision support is decided by `vision.js`: the `vision` setting is `auto`, `on`
+or `off`, and `auto` recognizes common vision families in the model id. The
+screenshot tool is only offered when images can be sent. OpenAI-compatible
+providers receive an `image_url` part; `toAnthropicMessages` converts the same
+part into an Anthropic base64 image block.
 
 ### Tool registry and risk
 
@@ -169,23 +273,32 @@ Two refinements happen in `agent.js`:
 Risk also affects dry run and logging. A dry-run call returns a description to
 the model and is never executed.
 
+The menu is not always the full registry. `toolsFor` returns an ordered list for
+the step: core tools plus enabled packs whose hosts match an open tab, and a
+slightly shorter core list for small models. `suggestTools` proposes the closest names when a model
+invents one, which turns a dead end into a one-line repair.
+
 ### Approvals and questions
 
-`main.js` keeps a `pending` map of unresolved prompts. Each entry has a timeout
-(3 minutes for approvals, 5 minutes for questions) and resolves a promise the
-agent is awaiting. The sidebar renders an inline card. A denial resolves `false`;
-a question resolves a string.
+`main.js` keeps prompts on the session that asked for them. Each entry has a
+timeout (3 minutes for approvals, 5 minutes for questions) and resolves a promise
+the agent is awaiting. The sidebar renders an inline card for the tab in view and
+a "needs you" chip for any other tab. A denial resolves `false`; a question
+resolves a string.
 
-The same map is settled on:
+Prompts are settled on:
 
-- user stop,
-- sidebar disconnect,
-- the end of every turn,
+- user stop (per tab, or all),
+- tab close,
+- the end of that session's turn,
 - prompt expiry.
 
-This prevents a closed sidebar from leaving a promise pending forever. The
+A closed sidebar deliberately does **not** settle prompts: the run belongs to the
+tab, and the prompt is re-sent with the session when the panel reconnects. The
 `answer` handler checks that the id belongs to a question, and `approve` checks
-that it belongs to an approval, so a message cannot resolve the wrong kind.
+that it belongs to an approval, so a message cannot resolve the wrong kind. The
+approval id is a random UUID, and the hosts added by "Always here" come from the
+pending request, not from the sidebar message.
 
 ### Site policy
 
@@ -205,11 +318,13 @@ The sidebar owns no agent logic. It receives a full state message on connect and
 incremental messages afterwards: deltas, transcript items, tool status, tab
 updates and busy state. The Markdown renderer builds DOM nodes with
 `textContent`; links are restricted to `http(s)` and `mailto`. Tables get a
-scroll container so a wide Canvas table cannot blow out the panel width.
+scroll container so a wide table cannot blow out the panel width.
 
 Key UI state:
 
 - `app.settings`, transcript, log, notes, models, tab, busy.
+- `app.tabId` / `app.sessions`: the tab in view and a summary of every tab with
+  work or history elsewhere.
 - `app.modelsByProvider`: cached model ids per provider, so the Models panel can
   switch between providers without refetching.
 - `app.modelsProvider`: the provider currently open in the Models panel. It is
@@ -223,9 +338,14 @@ with a **Change model** button. Selecting a provider card edits a draft; the
 active provider and model change together on **Use this model**. Model lists are
 cached per provider and cleared when a key is forgotten.
 
-Busy state disables Send and the new-conversation button, shows Stop, and blocks
-`send`/`runRecipe` in the background as well. The composer stays usable for
-typing, but a second request is refused until the turn ends.
+Every tab switch swaps in that tab's transcript, notes, busy state and prompts.
+The session strip under the tabs lists other tabs that are working, waiting for
+an answer, or holding an earlier conversation; clicking one focuses its tab.
+
+Busy state disables Send and the new-conversation button for the tab in view and
+shows Stop. It no longer blocks the entire browser: another tab can start its own
+run. The composer stays usable for typing, and starting a second run in the same
+tab is refused until that turn ends.
 
 Streaming is rendered as plain text while it arrives. The final assistant item
 is re-rendered as Markdown when `assistant_end` arrives, which avoids parsing
@@ -233,33 +353,55 @@ half-written code fences on every token.
 
 ## Storage
 
-`store.js` owns defaults and persistence:
+`store.js` owns defaults and global persistence:
 
 - `settings`: active provider and per-provider URL/key/model, temperature, step
-  limit, tool mode, context and page budgets, approval policy, trusted sites,
-  allowlist, dry run.
-- `session`: model history, transcript, scratchpad.
+  limit, tool mode, vision mode, context and page budgets, approval policy,
+  trusted sites, allowlist, dry run, installed packs, auto-update preference and
+  dismissed update version.
 - `log`: audit entries.
+- `updateCache`: the last GitHub release check, kept in `storage.local` for six
+  hours.
 
-Caps: 240 session entries, 400 log entries, 6,000 characters of scratchpad.
-`mergeSettings` deep-merges patches so changing one approval level does not wipe
-the others. `structuredClone` prevents callers from mutating defaults. New
-provider entries are generated from the catalog, so existing profiles gain cloud
-providers on load.
+`sessions.js` owns conversations:
+
+- `foxagent.sessions` in `browser.storage.session`: per-tab history, transcript
+  and scratchpad. Session storage is cleared with the browser, which keeps
+  persisted tab ids meaningful, and is capped at 10 MB by Firefox.
+- In memory: busy flag, abort controller and pending prompts (never persisted).
+
+Caps: 240 entries per session transcript/history, 12 sessions, 400 log entries,
+6,000 characters of scratchpad per tab. `mergeSettings` deep-merges patches so
+changing one approval level does not wipe the others. `structuredClone` prevents
+callers from mutating defaults. New provider entries are generated from the
+catalog, so existing profiles gain cloud providers on load.
 
 `publicSettings()` is the only boundary between stored settings and the sidebar.
 It replaces every provider's `apiKey` with `hasKey` plus a masked `keyMask`, and
 exposes provider metadata (label, URL, hint, cloud flag, key page). Key writes
 use explicit `saveKey`/`forgetKey` messages; ordinary settings patches never
-carry keys back to the UI.
+carry keys back to the UI. Incoming settings patches are filtered by
+`settings-guard.js`: unknown keys, `providers`, and out-of-range numbers are
+dropped, so display code cannot write a key or a server URL through the general
+settings path.
 
 ## Security notes
 
 - All page-derived strings are rendered with DOM text nodes; there is no
   `innerHTML` in the extension pages.
-- The content bridge ignores messages without the `__foxagent: true` marker.
+- Only this extension's sidebar page may connect to the background port; other
+  ports named `sidebar` are ignored.
+- The content bridge ignores messages without the `__foxagent: true` marker and
+  from a foreign sender id.
+- The sidebar may change only known settings. Provider credentials and base URLs
+  travel through dedicated messages, and approval replies cannot add hosts to the
+  trust list: hosts come from the request that was shown.
 - `page.fetch` refuses non-http(s), strips forbidden headers, and does not
   follow `file:` or extension URLs.
+- `web.fetch` refuses loopback, RFC1918 and link-local hosts plus cloud metadata
+  names, so a prompt-injected URL cannot probe the local network from the
+  extension context. Local pages remain available through `page.read` in a tab,
+  where the session is already the user's own.
 - `files.write` and download filenames are sanitized; `..`, control characters
   and reserved punctuation are removed, and paths are capped.
 - The extension never types into password fields and never reads cookies
@@ -268,6 +410,9 @@ carry keys back to the UI.
   report injection attempts.
 - The audit log records blocked and denied calls, which makes a misbehaving
   prompt visible after the fact.
+- Packs are part of the signed package. The remote catalog check reads JSON
+  only; it never downloads code. Update downloads a release asset to Downloads
+  and opens GitHub; it cannot install an extension by itself.
 - API keys never enter the sidebar: it receives only `hasKey` and a masked
   suffix. Requests that need a key are made by the background page. Anthropic
   uses `x-api-key`; OpenAI-compatible providers use `Authorization: Bearer`.
@@ -279,6 +424,9 @@ Residual risks:
 - A model, local or cloud, can still be manipulated by page content into
   proposing a bad tool call. Approval and dry run are the real boundary, not the
   prompt.
+- Two tabs can now run at once, so two approval prompts may be pending. The
+  session strip marks which tab is waiting, but a prompt can still time out if
+  the user never looks at that tab.
 - API keys are stored unencrypted in the Firefox profile.
 - A cloud provider receives prompts, page text and tool results, and bills the
   key. This is disclosed in Models and in the README.
@@ -290,8 +438,12 @@ Residual risks:
 ## Extension points
 
 - Add a tool: declare it in `TOOLS` with schema, risk, and `run(args, ctx)`. It
-  automatically appears in `toolSchemas`, the JSON fallback, and the prompt's
-  tool list if you update that text.
+  appears in `toolSchemas` and the prompt automatically; `toolsFor` decides when
+  it is offered (site pack, small-model menu).
+- Add a site pack: copy `packs/_template/`, give it an id, tools and prompt,
+  add the id to `packs/index.json` and import the module in
+  `packs/registry.js`. The catalog, host gating, prompt injection and Packs
+  panel pick it up with no core changes.
 - Add a provider: add an entry to `PROVIDERS` in `store.js` with a label, base
   URL, hint, and `cloud`/`keyUrl` metadata. The adapter needs no new code if the
   runtime is OpenAI-compatible; set `kind: "anthropic"` for a Messages API
@@ -303,22 +455,29 @@ Residual risks:
 
 ## Testing
 
-There is no browser test runner yet. Current checks:
+Current checks:
 
+- `node --test tests/logic.test.mjs` covers model sizing, tool menu, pack host
+  matching and catalog files, version comparison, tool suggestions, JSON
+  fallback parsing, caps and the settings guard.
+- `uv run --with playwright python tests/page_bridge.py` loads the real bridge
+  in Chromium against `tests/fixtures/page.html` and checks snapshots, shadow DOM,
+  iframe fields, clickText with nth, multi-field fill, press, waitFor and errors.
+- A stubbed `browser` harness imports `main.js` and checks hello and state
+  routing, per-tab reset isolation, the settings guard, pinned-tab resolution,
+  pack install, the remote pack check, update download and screenshot capture.
 - `node --check` on every module.
-- `web-ext lint` must stay at 0 errors / 0 warnings.
+- `web-ext lint --ignore-files "tests/**"` must stay at 0 errors / 0 warnings.
+  Tests are not packaged.
 - Node provider checks cover Anthropic payload conversion, Anthropic SSE and
   non-streaming responses, OpenAI SSE regression, model-listing auth headers,
   missing keys and rejected keys.
-- A Node smoke test can import `agent.js` for `parseTextCalls`, `allowedBySite`
-  and `trustedBySite`; the demo in `README.md` shows the idea.
-- Manual UI check with a mocked port against a local static server; the real
-  extension requires loading it in Firefox because `browser.*` is not available
-  in a normal page.
+- A Node harness with a stubbed `browser` API can import `main.js` and exercise
+  hello/state routing, per-tab reset, the settings guard and pinned-tab
+  resolution. The real extension is loaded in Firefox for UI checks.
 
-Planned: a small Vitest/Node suite for protocol parsing, host policy, Markdown
-conversion and Canvas payload projection, plus a headless Firefox run when the
-environment allows a second profile.
+Planned: a headless Firefox run that drives the sidebar port, and fixtures for
+Markdown conversion and pack payload projection.
 
 ## Roadmap
 
@@ -327,5 +486,6 @@ environment allows a second profile.
 2. PDF text extraction and OCR behind an explicit, local-only path.
 3. Saved task runs and resumable downloads with a persisted manifest.
 4. Model profiles per provider (temperature/tool mode remembered separately).
-5. Parallel reading of several tabs with a single synthesis step.
+5. A session picker for closed tabs, and restoring a conversation by URL after a
+   browser restart.
 6. Better page extraction heuristics for JavaScript apps and shadow DOM.

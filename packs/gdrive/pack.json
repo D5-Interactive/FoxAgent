@@ -1,0 +1,8 @@
+{
+  "id": "gdrive",
+  "name": "Google Drive",
+  "version": "1.0.0",
+  "description": "Browse Drive folders, find files and download them, with a no-delete, no-share boundary.",
+  "hosts": ["drive.google.com"],
+  "author": "D5 Interactive"
+}

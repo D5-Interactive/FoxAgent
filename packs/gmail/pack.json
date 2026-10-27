@@ -1,0 +1,8 @@
+{
+  "id": "gmail",
+  "name": "Gmail",
+  "version": "1.0.0",
+  "description": "A careful playbook for Gmail web: search, read threads, collect attachments, and draft without sending.",
+  "hosts": ["mail.google.com"],
+  "author": "D5 Interactive"
+}

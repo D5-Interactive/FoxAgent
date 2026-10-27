@@ -1,21 +1,34 @@
 /*
- * Background entry point: sidebar port, message routing, approvals, and
- * model discovery.
+ * Background entry point: sidebar ports, per-tab sessions, approvals, model
+ * discovery. A run belongs to its tab, not to the panel that started it, so
+ * switching tabs or closing the sidebar never retargets or kills work.
  */
 
 import {
-  load, state, persist, saveSettings, resetConversation, clearLog,
-  addTranscript, activeModel, activeProvider, PROVIDERS, clearNotes,
+  load, state, persist, saveSettings, clearLog,
+  activeModel, PROVIDERS,
 } from "./store.js";
 import { runAgent } from "./agent.js";
 import { listModels } from "./providers.js";
 import { RECIPES } from "./recipes.js";
 import { activeTab, tabInfo } from "./page.js";
+import { cleanSettingsPatch } from "./settings-guard.js";
+import { packList, packDescription, checkRemotePacks, loadCatalog } from "./packs.js";
+import { checkUpdate, cachedUpdate, downloadUpdate } from "./updates.js";
+import {
+  sessions, getSession, sessionForTabId, dropSession, runningCount,
+  addTranscript, clearNotes, resetSession, allSummaries, toDto,
+} from "./sessions.js";
 
 const ready = load().catch((err) => console.error("FoxAgent: failed to load state", err));
 
-const ports = new Set();
-const pending = new Map();
+const MAX_RUNNING = 2;
+
+// port -> { windowId }. A sidebar belongs to one window; its view follows that
+// window's active tab.
+const ports = new Map();
+// approval id -> session, so a reply can never pick another tab's prompt.
+const pendingOwners = new Map();
 // Model lists are per provider, so switching back and forth stays instant.
 const modelCache = new Map();
 
@@ -27,12 +40,22 @@ function send(port, message) {
   try { port.postMessage(message); } catch { /* port closed */ }
 }
 
-function broadcast(message) {
-  for (const port of ports) send(port, message);
+function broadcastWindow(windowId, message) {
+  for (const [port, meta] of ports) {
+    if (meta.windowId === windowId) send(port, message);
+  }
+}
+
+function broadcastAll(message) {
+  for (const port of ports.keys()) send(port, message);
 }
 
 function toast(text, level = "info") {
-  broadcast({ type: "toast", text, level });
+  broadcastAll({ type: "toast", text, level });
+}
+
+function broadcastSessions() {
+  broadcastAll({ type: "sessions", sessions: allSummaries() });
 }
 
 /*
@@ -70,14 +93,26 @@ function publicSettings() {
   };
 }
 
-function stateMessage() {
+function visibleUpdate(update) {
+  if (!update?.available) return null;
+  if (update.latest && update.latest === state.settings.dismissedUpdate) return null;
+  return update;
+}
+
+async function stateMessage(tab, session) {
   return {
     type: "state",
     settings: publicSettings(),
-    transcript: state.transcript,
+    tab: tab ? tabInfo(tab) : null,
+    tabId: session?.tabId ?? null,
+    transcript: session?.transcript || [],
+    notes: session?.notes || [],
+    busy: Boolean(session?.busy),
+    pending: session ? [...session.pending.values()].map((entry) => entry.request) : [],
+    sessions: allSummaries(),
+    packs: await packList(state.settings.packs || []),
+    update: visibleUpdate(await cachedUpdate()),
     log: state.log,
-    notes: state.notes,
-    busy: state.busy,
     models: state.models,
     modelsByProvider: Object.fromEntries(modelCache),
     selectedModel: activeModel(),
@@ -92,27 +127,84 @@ function rememberModels(providerKey, models) {
   return models;
 }
 
-async function pushTab() {
+// Every session event carries its tab id; the sidebar ignores events for
+// tabs it is not showing and only updates its badge.
+let saveTimer = null;
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => persist().catch(() => {}), 400);
+}
+
+function emitSession(session, message) {
+  broadcastWindow(session.windowId, { ...message, tabId: session.tabId });
+  if (message.type !== "delta") {
+    broadcastSessions();
+    // The event page can be suspended at any time: keep the tab's conversation on disk.
+    scheduleSave();
+  }
+}
+
+async function tabForMessage(msg, meta) {
+  if (msg?.tabId != null) {
+    try { return await browser.tabs.get(Number(msg.tabId)); } catch { throw new Error("That tab was closed."); }
+  }
+  return activeTab(meta.windowId ?? undefined);
+}
+
+async function pushTab(port, meta) {
   let tab = null;
-  try {
-    const t = await activeTab();
-    tab = await tabInfo(t);
-  } catch {}
-  broadcast({ type: "tab", tab });
+  try { tab = await activeTab(meta.windowId ?? undefined); } catch {}
+  const session = tab ? getSession(tab) : null;
+  send(port, {
+    type: "tab",
+    tab: tab ? tabInfo(tab) : null,
+    session: session ? toDto(session) : null,
+    sessions: allSummaries(),
+  });
 }
 
-let tabTimer = null;
-function scheduleTabPush() {
-  clearTimeout(tabTimer);
-  tabTimer = setTimeout(pushTab, 200);
+const tabTimers = new Map();
+function scheduleTabPush(windowId) {
+  if (windowId == null) return;
+  clearTimeout(tabTimers.get(windowId));
+  tabTimers.set(windowId, setTimeout(() => {
+    for (const [port, meta] of ports) {
+      if (meta.windowId === windowId) pushTab(port, meta);
+    }
+  }, 200));
 }
 
-browser.tabs.onActivated.addListener(scheduleTabPush);
-browser.tabs.onUpdated.addListener((id, info) => {
-  if (info.status === "complete" || info.url) scheduleTabPush();
+browser.tabs.onActivated.addListener(({ windowId }) => scheduleTabPush(windowId));
+browser.tabs.onUpdated.addListener((id, info, tab) => {
+  const session = sessionForTabId(id);
+  if (session) {
+    session.title = tab.title || session.title;
+    session.url = tab.url || session.url;
+    broadcastSessions();
+  }
+  if (info.status === "complete" || info.url) scheduleTabPush(tab.windowId);
 });
-browser.tabs.onRemoved.addListener(scheduleTabPush);
-browser.windows.onFocusChanged.addListener(scheduleTabPush);
+browser.tabs.onRemoved.addListener((id, info) => {
+  const session = dropSession(id);
+  if (session) {
+    broadcastWindow(session.windowId, { type: "session_removed", tabId: id });
+    broadcastSessions();
+    for (const key of [...pendingOwners.keys()]) {
+      if (pendingOwners.get(key) === id) pendingOwners.delete(key);
+    }
+  }
+  scheduleTabPush(info.windowId);
+});
+browser.tabs.onAttached.addListener((id, info) => {
+  const session = sessionForTabId(id);
+  if (session) {
+    session.windowId = info.newWindowId;
+    broadcastSessions();
+    scheduleSave();
+  }
+  scheduleTabPush(info.newWindowId);
+});
+browser.windows.onFocusChanged.addListener((windowId) => scheduleTabPush(windowId));
 
 browser.action.onClicked.addListener(() => {
   browser.sidebarAction.open().catch((err) => console.warn("FoxAgent: could not open sidebar", err));
@@ -120,12 +212,20 @@ browser.action.onClicked.addListener(() => {
 
 browser.runtime.onConnect.addListener((port) => {
   if (port.name !== "sidebar") return;
-  ports.add(port);
+  // Only this extension's own sidebar page may drive runs.
+  const senderUrl = port.sender?.url || "";
+  if (senderUrl && !senderUrl.startsWith(browser.runtime.getURL("src/sidebar/"))) return;
+
+  const meta = { windowId: null };
+  ports.set(port, meta);
 
   port.onMessage.addListener(async (msg) => {
     try {
       await ready;
-      await handleMessage(msg, port);
+      if (msg?.type === "hello" && Number.isFinite(Number(msg.windowId))) {
+        meta.windowId = Number(msg.windowId);
+      }
+      await handleMessage(msg, port, meta);
     } catch (err) {
       console.error("FoxAgent: message failed", msg?.type, err);
       send(port, { type: "toast", text: err?.message || String(err), level: "error" });
@@ -134,22 +234,18 @@ browser.runtime.onConnect.addListener((port) => {
 
   port.onDisconnect.addListener(() => {
     ports.delete(port);
-    // The sidebar is the only UI; closing it must not leave a turn waiting forever.
-    settleAll("(no answer — the sidebar closed)");
-    if (!ports.size && state.controller) {
-      state.controller.abort();
-    }
+    // Runs and approvals belong to tabs. Losing the panel must not kill them:
+    // approvals keep their timeouts and re-appear when the sidebar returns.
   });
 
   ready.then(() => {
-    send(port, stateMessage());
-    pushTab();
+    send(port, { type: "ready" });
+    const key = state.settings.provider;
     if (!state.models.length) {
-      const key = state.settings.provider;
       listModels(state.settings, key)
         .then((models) => {
           rememberModels(key, models);
-          send(port, { type: "models", provider: key, models, selected: activeModel() });
+          broadcastAll({ type: "models", provider: key, models, selected: activeModel() });
         })
         .catch(() => {});
     }
@@ -160,101 +256,128 @@ browser.runtime.onConnect.addListener((port) => {
 /* Approvals and questions                                             */
 /* ------------------------------------------------------------------ */
 
-function settle(id, value) {
-  const entry = pending.get(id);
+function settle(session, id, value) {
+  const entry = session.pending.get(id);
   if (!entry) return;
   clearTimeout(entry.timer);
-  pending.delete(id);
+  session.pending.delete(id);
+  pendingOwners.delete(id);
   entry.resolve(value);
+  if (!session.pending.size && session.busy) session.status = "working";
+  emitSession(session, {
+    type: "pending_resolved",
+    id,
+    tabId: session.tabId,
+    approvals: session.pending.size,
+  });
 }
 
 /*
- * A stop, a closed sidebar or a finished turn must never leave the agent
- * waiting on an approval or a question that nobody can answer.
+ * A stop, a closed tab or a finished turn must never leave the agent waiting
+ * on an approval or a question that nobody can answer.
  */
-function settleAll(value) {
-  const entries = [...pending.values()];
-  for (const entry of entries) {
+function settleAll(session, value) {
+  for (const entry of [...session.pending.values()]) {
+    clearTimeout(entry.timer);
+    pendingOwners.delete(entry.request.id);
     entry.resolve(entry.kind === "ask"
       ? (typeof value === "string" ? value : "(no answer — the task stopped)")
       : false);
-    clearTimeout(entry.timer);
   }
-  pending.clear();
-  broadcast({ type: "pending_clear" });
+  session.pending.clear();
+  emitSession(session, { type: "pending_clear", tabId: session.tabId });
 }
 
-function requestApproval(req) {
+function waitFor(session, kind, req, timeoutMs, fallback) {
   return new Promise((resolve) => {
-    const id = "ap_" + Math.random().toString(36).slice(2, 10);
-    const timer = setTimeout(() => {
-      settle(id, false);
-      broadcast({ type: "confirm_expired", id });
-    }, 180000);
-    pending.set(id, { resolve, timer, kind: "approve", port: null });
-    broadcast({ type: "confirm", request: { ...req, id } });
+    const id = (kind === "approve" ? "ap_" : "ask_") + crypto.randomUUID();
+    const request = { ...req, id, tabId: session.tabId, tabTitle: session.title };
+    const entry = { kind, resolve, request, timer: null };
+    entry.timer = setTimeout(() => {
+      settle(session, id, fallback);
+      emitSession(session, { type: kind === "approve" ? "confirm_expired" : "ask_expired", id });
+    }, timeoutMs);
+    session.pending.set(id, entry);
+    pendingOwners.set(id, session.tabId);
+    session.status = "waiting";
+    emitSession(session, { type: kind === "approve" ? "confirm" : "ask", request });
   });
 }
 
-function requestAnswer(req) {
-  return new Promise((resolve) => {
-    const id = "ask_" + Math.random().toString(36).slice(2, 10);
-    const timer = setTimeout(() => {
-      settle(id, "(no answer — the user did not respond)");
-      broadcast({ type: "ask_expired", id });
-    }, 300000);
-    pending.set(id, { resolve, timer, kind: "ask", port: null });
-    broadcast({ type: "ask", request: { ...req, id } });
-  });
+function requestApproval(session, req) {
+  return waitFor(session, "approve", req, 180000, false);
+}
+
+function requestAnswer(session, req) {
+  return waitFor(session, "ask", req, 300000, "(no answer — the user did not respond)");
 }
 
 /* ------------------------------------------------------------------ */
 /* Turns                                                               */
 /* ------------------------------------------------------------------ */
 
-async function startRun(text, origin = "chat") {
+async function startRun(session, text, origin = "chat") {
   const prompt = String(text || "").trim();
   if (!prompt) return;
-  if (state.busy) {
-    toast("FoxAgent is already working. Stop it first.", "warn");
+  if (session.busy) {
+    toast("This tab is already working. Stop it first.", "warn");
+    return;
+  }
+  if (runningCount() >= MAX_RUNNING) {
+    toast(`Two tabs are already working. Let one finish, or stop one in the tab strip.`, "warn");
     return;
   }
 
-  state.busy = true;
-  state.controller = new AbortController();
+  let tab;
+  try {
+    tab = await browser.tabs.get(session.tabId);
+  } catch {
+    toast("That tab was closed. Open the page again.", "error");
+    return;
+  }
+  session.busy = true;
+  session.status = "working";
+  session.controller = new AbortController();
+  session.title = tab.title || session.title;
+  session.url = tab.url || session.url;
+  session.windowId = tab.windowId;
 
-  const userItem = addTranscript({ type: "user", text: prompt });
-  state.history.push({ role: "user", text: prompt, at: Date.now(), origin });
-  broadcast({ type: "item", item: userItem });
-  broadcast({ type: "busy", busy: true });
+  const userItem = addTranscript(session, { type: "user", text: prompt });
+  session.history.push({ role: "user", text: prompt, at: Date.now(), origin });
+  emitSession(session, { type: "item", item: userItem });
+  emitSession(session, { type: "busy", busy: true, status: "working" });
 
   try {
     await persist();
     await runAgent({
-      state,
+      session,
       settings: state.settings,
-      emit: broadcast,
-      approve: requestApproval,
-      ask: requestAnswer,
-      signal: state.controller.signal,
+      emit: (message) => emitSession(session, message),
+      approve: (req) => requestApproval(session, req),
+      ask: (req) => requestAnswer(session, req),
+      signal: session.controller.signal,
     });
   } catch (err) {
-    const item = addTranscript({
+    const item = addTranscript(session, {
       type: "notice",
       text: err?.message || String(err),
       level: err?.aborted ? "warn" : "error",
     });
-    broadcast({ type: "item", item });
+    emitSession(session, { type: "item", item });
   } finally {
-    settleAll();
-    state.busy = false;
-    state.controller = null;
+    settleAll(session);
+    session.busy = false;
+    session.status = "idle";
+    session.controller = null;
     await persist().catch((err) => console.error("FoxAgent: could not save session", err));
-    broadcast({ type: "busy", busy: false });
-    broadcast({ type: "notes", notes: state.notes });
-    await pushTab();
+    emitSession(session, { type: "busy", busy: false, status: "idle" });
+    emitSession(session, { type: "notes", notes: session.notes });
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Settings validation (the sidebar may only change known keys)        */
+/* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
 /* Message handling                                                    */
@@ -264,29 +387,43 @@ async function refreshModels(providerKey = state.settings.provider, silent = fal
   const models = await listModels(state.settings, providerKey);
   rememberModels(providerKey, models);
   if (!silent) {
-    broadcast({ type: "models", provider: providerKey, models, selected: activeModel() });
+    broadcastAll({ type: "models", provider: providerKey, models, selected: activeModel() });
   }
   return models;
 }
 
-async function handleMessage(msg, port) {
+async function handleMessage(msg, port, meta) {
   if (!msg || typeof msg !== "object") return;
   switch (msg.type) {
-    case "getState":
-      send(port, stateMessage());
+    case "hello":
+      if (meta.windowId == null) return;
+      await pushTab(port, meta);
+      {
+        let tab = null;
+        try { tab = await activeTab(meta.windowId); } catch {}
+        const session = tab ? getSession(tab) : null;
+        send(port, await stateMessage(tab, session));
+      }
       return;
 
-    case "send":
-      if (state.busy) {
-        send(port, { type: "toast", text: "Still working on the previous request.", level: "warn" });
-        return;
-      }
+    case "getState": {
+      let tab = null;
+      try { tab = await tabForMessage(msg, meta); } catch {}
+      const session = tab ? getSession(tab) : null;
+      send(port, await stateMessage(tab, session));
+      return;
+    }
+
+    case "send": {
+      const tab = await tabForMessage(msg, meta);
+      const session = getSession(tab);
       if (!activeModel()) {
         send(port, { type: "needModel" });
         return;
       }
-      startRun(msg.text);
+      startRun(session, msg.text);
       return;
+    }
 
     case "runRecipe": {
       const recipe = RECIPES.find((r) => r.id === msg.id);
@@ -294,65 +431,86 @@ async function handleMessage(msg, port) {
         send(port, { type: "toast", text: "Unknown task.", level: "error" });
         return;
       }
-      if (state.busy) {
-        send(port, { type: "toast", text: "Still working on the previous request.", level: "warn" });
-        return;
-      }
+      const tab = await tabForMessage(msg, meta);
+      const session = getSession(tab);
       if (!activeModel()) {
         send(port, { type: "needModel" });
         return;
       }
       const extra = String(msg.extra || "").trim();
-      startRun(recipe.prompt + (extra ? `\n\nExtra context from me: ${extra}` : ""), recipe.id);
+      startRun(session, recipe.prompt + (extra ? `\n\nExtra context from me: ${extra}` : ""), recipe.id);
       return;
     }
 
-    case "abort":
-      if (state.controller) state.controller.abort();
-      settleAll("(no answer — the task was stopped)");
+    case "abort": {
+      if (msg.all) {
+        for (const session of [...sessions.values()]) {
+          session.controller?.abort();
+          settleAll(session, "(no answer — the task was stopped)");
+        }
+        return;
+      }
+      if (msg.tabId == null) return;
+      const session = sessionForTabId(msg.tabId);
+      if (!session) return;
+      session.controller?.abort();
+      settleAll(session, "(no answer — the task was stopped)");
       return;
+    }
 
     case "approve": {
-      const entry = pending.get(msg.id);
+      const owner = pendingOwners.get(msg.id);
+      const session = owner != null ? sessionForTabId(owner) : null;
+      const entry = session?.pending.get(msg.id);
       if (!entry || entry.kind !== "approve") return;
-      const hosts = Array.isArray(msg.hosts) && msg.hosts.length
-        ? msg.hosts
-        : msg.host ? [msg.host] : [];
+      // Trust comes from the request we sent, never from the reply.
+      const hosts = entry.request.hosts || [];
       if (msg.always && hosts.length) {
         const sites = [...state.settings.trustedSites];
         for (const host of hosts) {
           const site = String(host).toLowerCase().trim();
           if (site && !sites.includes(site)) sites.push(site);
         }
-        await saveSettings({ trustedSites: sites });
-        broadcast({ type: "settings", settings: publicSettings() });
+        await saveSettings({ trustedSites: sites.slice(0, 200) });
+        broadcastAll({ type: "settings", settings: publicSettings() });
       }
-      settle(msg.id, Boolean(msg.allow));
+      settle(session, msg.id, Boolean(msg.allow));
       return;
     }
 
     case "answer": {
-      const entry = pending.get(msg.id);
+      const owner = pendingOwners.get(msg.id);
+      const session = owner != null ? sessionForTabId(owner) : null;
+      const entry = session?.pending.get(msg.id);
       if (!entry || entry.kind !== "ask") return;
-      settle(msg.id, String(msg.text || "").trim());
+      settle(session, msg.id, String(msg.text || "").trim());
+      return;
+    }
+
+    case "focusTab": {
+      const tab = await browser.tabs.get(Number(msg.tabId));
+      await browser.tabs.update(tab.id, { active: true });
+      await browser.windows.update(tab.windowId, { focused: true }).catch(() => {});
+      scheduleTabPush(tab.windowId);
       return;
     }
 
     case "saveSettings": {
-      const patch = msg.patch || {};
+      const patch = cleanSettingsPatch(msg.patch);
+      if (!Object.keys(patch).length) return;
       const before = state.settings.provider;
       await saveSettings(patch);
-      broadcast({ type: "settings", settings: publicSettings() });
+      broadcastAll({ type: "settings", settings: publicSettings() });
       if (patch.provider && patch.provider !== before) {
         const key = state.settings.provider;
         const cached = modelCache.get(key);
         if (cached) {
           state.models = cached;
-          broadcast({ type: "models", provider: key, models: cached, selected: activeModel() });
+          broadcastAll({ type: "models", provider: key, models: cached, selected: activeModel() });
         } else {
           state.models = [];
           refreshModels(key, true)
-            .then((models) => broadcast({ type: "models", provider: key, models, selected: activeModel() }))
+            .then((models) => broadcastAll({ type: "models", provider: key, models, selected: activeModel() }))
             .catch(() => {});
         }
       }
@@ -368,7 +526,7 @@ async function handleMessage(msg, port) {
         return;
       }
       await saveSettings({ providers: { [key]: { apiKey } } });
-      broadcast({ type: "settings", settings: publicSettings() });
+      broadcastAll({ type: "settings", settings: publicSettings() });
       send(port, { type: "toast", text: `Key saved for ${PROVIDERS[key].label}.`, level: "success" });
       return;
     }
@@ -379,8 +537,8 @@ async function handleMessage(msg, port) {
       await saveSettings({ providers: { [key]: { apiKey: "" } } });
       modelCache.delete(key);
       if (key === state.settings.provider) state.models = [];
-      broadcast({ type: "settings", settings: publicSettings() });
-      broadcast({ type: "models", provider: key, models: [], selected: activeModel() });
+      broadcastAll({ type: "settings", settings: publicSettings() });
+      broadcastAll({ type: "models", provider: key, models: [], selected: activeModel() });
       send(port, { type: "toast", text: `Key removed for ${PROVIDERS[key].label}.`, level: "info" });
       return;
     }
@@ -397,16 +555,16 @@ async function handleMessage(msg, port) {
       const baseUrl = String(msg.baseUrl || "").trim();
       if (baseUrl && /^https?:\/\//i.test(baseUrl)) patch.providers[key].baseUrl = baseUrl;
       await saveSettings(patch);
-      broadcast({ type: "settings", settings: publicSettings() });
+      broadcastAll({ type: "settings", settings: publicSettings() });
       const cached = modelCache.get(key);
       if (cached) {
         state.models = cached;
-        broadcast({ type: "models", provider: key, models: cached, selected: activeModel() });
+        broadcastAll({ type: "models", provider: key, models: cached, selected: activeModel() });
       } else {
         state.models = [];
-        broadcast({ type: "models", provider: key, models: [], selected: activeModel() });
+        broadcastAll({ type: "models", provider: key, models: [], selected: activeModel() });
         refreshModels(key, true)
-          .then((models) => broadcast({ type: "models", provider: key, models, selected: activeModel() }))
+          .then((models) => broadcastAll({ type: "models", provider: key, models, selected: activeModel() }))
           .catch(() => {});
       }
       if (PROVIDERS[key].cloud && !state.settings.providers[key]?.apiKey) {
@@ -420,9 +578,20 @@ async function handleMessage(msg, port) {
     case "refreshModels": {
       const target = String(msg.provider || msg.patch?.provider || state.settings.provider);
       if (!PROVIDERS[target]) return;
-      if (msg.patch) {
-        await saveSettings(msg.patch);
-        broadcast({ type: "settings", settings: publicSettings() });
+      const patch = cleanSettingsPatch(msg.patch);
+      const draft = msg.patch?.providers?.[target];
+      if (draft && typeof draft === "object") {
+        const entry = {};
+        const baseUrl = String(draft.baseUrl || "").trim();
+        if (/^https?:\/\//i.test(baseUrl)) entry.baseUrl = baseUrl;
+        if (typeof draft.apiKey === "string" && draft.apiKey.trim()) {
+          entry.apiKey = draft.apiKey.trim().slice(0, 4096);
+        }
+        if (Object.keys(entry).length) patch.providers = { [target]: entry };
+      }
+      if (Object.keys(patch).length) {
+        await saveSettings(patch);
+        broadcastAll({ type: "settings", settings: publicSettings() });
       }
       try {
         const models = await refreshModels(target, true);
@@ -441,24 +610,32 @@ async function handleMessage(msg, port) {
       return;
     }
 
-    case "reset":
-      if (state.busy) {
-        send(port, { type: "toast", text: "Stop the current task before starting a new conversation.", level: "warn" });
+    case "reset": {
+      const tab = await tabForMessage(msg, meta);
+      const session = getSession(tab);
+      if (session.busy) {
+        send(port, { type: "toast", text: "Stop this tab's task before starting a new conversation.", level: "warn" });
         return;
       }
-      await resetConversation();
-      broadcast({ type: "reset", transcript: state.transcript });
-      return;
-
-    case "clearNotes":
-      clearNotes();
+      resetSession(session);
       await persist();
-      broadcast({ type: "notes", notes: [] });
+      emitSession(session, { type: "reset", transcript: [], tabId: session.tabId });
+      broadcastSessions();
       return;
+    }
+
+    case "clearNotes": {
+      const tab = await tabForMessage(msg, meta);
+      const session = getSession(tab);
+      clearNotes(session);
+      await persist();
+      emitSession(session, { type: "notes", notes: [], tabId: session.tabId });
+      return;
+    }
 
     case "clearLog":
       await clearLog();
-      broadcast({ type: "log", log: [] });
+      broadcastAll({ type: "log", log: [] });
       return;
 
     case "exportLog": {
@@ -480,6 +657,98 @@ async function handleMessage(msg, port) {
       return;
     }
 
+    case "setPack": {
+      const id = String(msg.id || "");
+      const known = await loadCatalog();
+      if (!known.some((p) => p.id === id)) {
+        send(port, { type: "toast", text: "Unknown pack.", level: "error" });
+        return;
+      }
+      const enabled = new Set(state.settings.packs || []);
+      if (msg.enabled) enabled.add(id);
+      else enabled.delete(id);
+      await saveSettings({ packs: [...enabled] });
+      broadcastAll({ type: "settings", settings: publicSettings() });
+      broadcastAll({ type: "packs", packs: await packList([...enabled]) });
+      send(port, {
+        type: "toast",
+        text: msg.enabled ? `Installed ${id}.` : `Removed ${id}.`,
+        level: "success",
+      });
+      return;
+    }
+
+    case "checkPacks": {
+      try {
+        const data = await checkRemotePacks(state.settings.packs || []);
+        send(port, { type: "packsRemote", data });
+        send(port, {
+          type: "toast",
+          text: data.newPacks.length
+            ? `${data.newPacks.length} new pack(s) in the repository. A FoxAgent update installs them.`
+            : "Pack catalog is current.",
+          level: data.newPacks.length ? "info" : "success",
+        });
+      } catch (err) {
+        send(port, { type: "toast", text: err?.message || String(err), level: "error" });
+      }
+      return;
+    }
+
+    case "getPackDesc": {
+      try {
+        const text = await packDescription(String(msg.id || ""));
+        send(port, { type: "packDesc", id: msg.id, text });
+      } catch (err) {
+        send(port, { type: "packDesc", id: msg.id, text: err?.message || String(err) });
+      }
+      return;
+    }
+
+    case "checkUpdate": {
+      try {
+        const update = await checkUpdate({ force: Boolean(msg.force) });
+        send(port, { type: "updateStatus", update });
+        if (visibleUpdate(update)) send(port, { type: "update", update });
+        else send(port, { type: "toast", text: `FoxAgent ${update.current} is up to date.`, level: "success" });
+      } catch (err) {
+        send(port, { type: "updateStatus", update: null, error: err?.message || String(err) });
+        send(port, { type: "toast", text: err?.message || String(err), level: "error" });
+      }
+      return;
+    }
+
+    case "downloadUpdate": {
+      try {
+        const update = await downloadUpdate();
+        send(port, {
+          type: "toast",
+          text: `Saved ${update.filename}. Firefox installs signed add-ons only, so the release page is open for the final step.`,
+          level: "success",
+        });
+        if (update.url) await browser.tabs.create({ url: update.url, active: true });
+        send(port, { type: "updateDone", update });
+      } catch (err) {
+        send(port, { type: "toast", text: err?.message || String(err), level: "error" });
+      }
+      return;
+    }
+
+    case "dismissUpdate": {
+      const version = String(msg.version || "");
+      if (!version) return;
+      await saveSettings({ dismissedUpdate: version });
+      return;
+    }
+
+    case "openRelease": {
+      const url = String(msg.url || "");
+      if (/^https:\/\/github\.com\/D5-Interactive\/FoxAgent\//i.test(url)) {
+        await browser.tabs.create({ url, active: true });
+      }
+      return;
+    }
+
     default:
       return;
   }
@@ -491,7 +760,15 @@ ready.then(() => {
   listModels(state.settings, key)
     .then((models) => {
       rememberModels(key, models);
-      broadcast({ type: "models", provider: key, models, selected: activeModel() });
+      broadcastAll({ type: "models", provider: key, models, selected: activeModel() });
     })
     .catch(() => {});
+  if (state.settings.autoUpdate) {
+    checkUpdate()
+      .then((update) => {
+        const visible = visibleUpdate(update);
+        if (visible) broadcastAll({ type: "update", update: visible });
+      })
+      .catch(() => {});
+  }
 });

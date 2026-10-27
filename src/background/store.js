@@ -1,8 +1,11 @@
 /*
- * Settings + session persistence. Everything lives in browser.storage.local,
+ * Settings + activity log persistence. Everything lives in browser.storage.local,
  * on the user's machine. Page data is sent only to the provider chosen in
  * Models: a local server, or a cloud API the user connected with their own key.
+ * Tab conversations are handled by sessions.js.
  */
+
+import { loadSessions, saveSessions } from "./sessions.js";
 
 export const PROVIDERS = {
   lmstudio: {
@@ -104,6 +107,7 @@ export const DEFAULT_SETTINGS = {
   temperature: 0.2,
   maxSteps: 32,
   toolMode: "auto",
+  vision: "auto",
   contextChars: 48000,
   maxPageChars: 12000,
   approval: { read: "auto", act: "confirm", write: "confirm" },
@@ -111,23 +115,18 @@ export const DEFAULT_SETTINGS = {
   siteAllowlist: [],
   dryRun: false,
   autoIncludePage: true,
+  packs: ["canvas"],
+  autoUpdate: false,
+  dismissedUpdate: "",
 };
 
 export const state = {
   settings: structuredClone(DEFAULT_SETTINGS),
-  history: [],
-  transcript: [],
   log: [],
-  notes: [],
   models: [],
-  busy: false,
-  controller: null,
-  activeTab: null,
 };
 
-const SESSION_CAP = 240;
 const LOG_CAP = 400;
-const NOTES_CAP = 6000;
 
 function clone(v) {
   return v == null ? v : structuredClone(v);
@@ -150,13 +149,10 @@ function mergeSettings(base, patch) {
 }
 
 export async function load() {
-  const stored = await browser.storage.local.get(["settings", "session", "log"]);
+  const stored = await browser.storage.local.get(["settings", "log"]);
   state.settings = mergeSettings(DEFAULT_SETTINGS, stored.settings || {});
-  const session = stored.session || {};
-  state.history = Array.isArray(session.history) ? session.history.slice(-SESSION_CAP) : [];
-  state.transcript = Array.isArray(session.transcript) ? session.transcript.slice(-SESSION_CAP) : [];
-  state.notes = Array.isArray(session.notes) ? session.notes : [];
   state.log = Array.isArray(stored.log) ? stored.log.slice(-LOG_CAP) : [];
+  await loadSessions();
   return state;
 }
 
@@ -175,28 +171,6 @@ export function activeModel() {
   return activeProvider().model || "";
 }
 
-export function addNote(text) {
-  const t = String(text || "").trim();
-  if (!t) return 0;
-  state.notes.push(t);
-  let total = state.notes.join("\n").length;
-  while (total > NOTES_CAP && state.notes.length > 1) {
-    total -= state.notes.shift().length + 1;
-  }
-  return total;
-}
-
-export function clearNotes() {
-  state.notes = [];
-}
-
-export function addTranscript(item) {
-  const withId = { id: "m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), at: Date.now(), ...item };
-  state.transcript.push(withId);
-  if (state.transcript.length > SESSION_CAP) state.transcript = state.transcript.slice(-SESSION_CAP);
-  return withId;
-}
-
 export function addLog(entry) {
   const withId = { id: "l" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), at: Date.now(), ...entry };
   state.log.push(withId);
@@ -207,20 +181,9 @@ export function addLog(entry) {
 export async function persist() {
   await browser.storage.local.set({
     settings: state.settings,
-    session: {
-      history: state.history.slice(-SESSION_CAP),
-      transcript: state.transcript.slice(-SESSION_CAP),
-      notes: state.notes.slice(-40),
-    },
     log: state.log.slice(-LOG_CAP),
   });
-}
-
-export async function resetConversation() {
-  state.history = [];
-  state.transcript = [];
-  state.notes = [];
-  await persist();
+  await saveSessions();
 }
 
 export async function clearLog() {

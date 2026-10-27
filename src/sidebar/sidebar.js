@@ -35,6 +35,12 @@ const app = {
   modelsProvider: null,
   busy: false,
   tab: null,
+  tabId: null,
+  sessions: [],
+  packs: [],
+  packsRemote: null,
+  packDetail: null,
+  update: null,
   panel: "chat",
   pending: new Map(),
   streaming: null,
@@ -68,16 +74,30 @@ function connect() {
     setBusy(false);
     scheduleReconnect();
   });
-  send({ type: "getState" });
+  hello();
+}
+
+/*
+ * The same extension can have a sidebar in several windows. Telling the
+ * background which window this panel belongs to keeps each panel on its own
+ * window's active tab instead of whichever tab Firefox reports globally.
+ */
+async function hello() {
+  let windowId = null;
+  try {
+    const win = await browser.windows.getCurrent();
+    windowId = win?.id ?? null;
+  } catch {}
+  send({ type: "hello", windowId });
 }
 
 function scheduleReconnect() {
   clearTimeout(reconnectTimer);
-  reconnectTimer = setTimeout(() => {
+  reconnectTimer = setTimeout(async () => {
     connect();
     if (port) {
       setConn("connecting", "reconnecting");
-      send({ type: "getState" });
+      hello();
     }
   }, 900);
 }
@@ -442,6 +462,7 @@ function setBusy(busy) {
     setStatus("", false);
     $("streaming").hidden = true;
   }
+  renderRunningNote();
 }
 
 /* ------------------------------------------------------------------ */
@@ -998,7 +1019,7 @@ function runRecipe(id) {
     return;
   }
   showPanel("chat");
-  send({ type: "runRecipe", id });
+  send({ type: "runRecipe", id, tabId: app.tabId });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1065,9 +1086,11 @@ function fillSettings() {
   $("setTemp").value = s.temperature;
   $("setSteps").value = s.maxSteps;
   $("setToolMode").value = s.toolMode;
+  $("setVision").value = s.vision || "auto";
   $("setContext").value = s.contextChars;
   $("setPageChars").value = s.maxPageChars;
   $("setDryRun").checked = Boolean(s.dryRun);
+  $("setAutoUpdate").checked = Boolean(s.autoUpdate);
   $("setRead").value = s.approval?.read || "auto";
   $("setAct").value = s.approval?.act || "confirm";
   $("setWrite").value = s.approval?.write || "confirm";
@@ -1144,9 +1167,11 @@ function saveSettingsForm(event) {
     temperature: Number($("setTemp").value) || 0,
     maxSteps: Math.max(1, Math.min(80, Number($("setSteps").value) || 32)),
     toolMode: $("setToolMode").value,
+    vision: $("setVision").value,
     contextChars: Math.max(8000, Number($("setContext").value) || 48000),
     maxPageChars: Math.max(2000, Number($("setPageChars").value) || 12000),
     dryRun: $("setDryRun").checked,
+    autoUpdate: $("setAutoUpdate").checked,
     approval: {
       read: $("setRead").value,
       act: $("setAct").value,
@@ -1183,7 +1208,7 @@ function showToast(text, level = "info") {
 
 function showPanel(name) {
   app.panel = name;
-  for (const candidate of ["chat", "tasks", "activity", "models", "settings"]) {
+  for (const candidate of ["chat", "tasks", "packs", "activity", "models", "settings"]) {
     $(`panel-${candidate}`).hidden = candidate !== name;
   }
   document.querySelectorAll(".tab").forEach((tab) => {
@@ -1196,6 +1221,7 @@ function showPanel(name) {
     scrollBottom(true);
   }
   if (name === "activity") renderLog();
+  if (name === "packs") renderPacks();
   if (name === "tasks" && !app.settings) send({ type: "getState" });
 }
 
@@ -1205,6 +1231,11 @@ function showPanel(name) {
 
 function applyState(msg) {
   app.settings = msg.settings;
+  app.tab = msg.tab || null;
+  app.tabId = msg.tabId ?? msg.tab?.id ?? null;
+  app.sessions = Array.isArray(msg.sessions) ? msg.sessions : [];
+  app.packs = Array.isArray(msg.packs) ? msg.packs : [];
+  app.update = msg.update || null;
   app.transcript = Array.isArray(msg.transcript) ? msg.transcript : [];
   app.log = Array.isArray(msg.log) ? msg.log : [];
   app.notes = Array.isArray(msg.notes) ? msg.notes : [];
@@ -1216,63 +1247,325 @@ function applyState(msg) {
 
   setConn("connected", "connected");
   renderTranscript(true);
+  renderTab();
+  renderSessionStrip();
+  renderPacks();
+  renderUpdateBanner();
   renderModelButton();
   renderWelcome();
   renderSettingsSummary();
   renderRecipes(msg.recipes || []);
   renderLog();
   renderNotes();
+  $("pending").replaceChildren();
+  app.pending.clear();
+  for (const req of Array.isArray(msg.pending) ? msg.pending : []) {
+    if (req.question) askCard(req);
+    else approvalCard(req);
+  }
   setBusy(Boolean(msg.busy));
   if (app.panel === "settings") fillSettings();
   if (app.panel === "models") renderModelsPanel(true);
   if (app.panel === "chat" && !currentModel()) $("welcome").hidden = false;
 }
 
+/*
+ * The active tab changed, or its session changed state. The background sends
+ * the whole session for the tab in view, so switching tabs is a view swap and
+ * never a conversation reset.
+ */
+function applyTab(msg) {
+  app.tab = msg.tab || null;
+  app.sessions = Array.isArray(msg.sessions) ? msg.sessions : app.sessions;
+  const dto = msg.session || null;
+  const nextId = dto?.tabId ?? msg.tab?.id ?? null;
+  const changed = app.tabId == null || nextId == null || String(app.tabId) !== String(nextId);
+  app.tabId = nextId;
+
+  renderTab();
+  renderSessionStrip();
+
+  if (!changed) return;
+
+  app.transcript = Array.isArray(dto?.transcript) ? dto.transcript : [];
+  app.notes = Array.isArray(dto?.notes) ? dto.notes : [];
+  app.streaming = null;
+  $("streaming").hidden = true;
+  $("pending").replaceChildren();
+  app.pending.clear();
+  renderTranscript(true);
+  renderNotes();
+  for (const req of Array.isArray(dto?.pending) ? dto.pending : []) {
+    if (req.question) askCard(req);
+    else approvalCard(req);
+  }
+  setBusy(Boolean(dto?.busy));
+  if (dto?.busy) setStatus("working in this tab", true);
+}
+
+/* Background sessions: one chip per tab with work or history elsewhere. */
+function renderSessionStrip() {
+  const strip = $("sessionStrip");
+  if (!strip) return;
+  const others = (app.sessions || []).filter((s) => String(s.tabId) !== String(app.tabId));
+  strip.hidden = !others.length;
+  strip.replaceChildren();
+  for (const s of others) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "session-chip";
+    btn.dataset.busy = s.busy ? "true" : "false";
+    btn.dataset.warn = s.approvals ? "true" : "false";
+    btn.title = s.title || s.url || `Tab ${s.tabId}`;
+    const dot = document.createElement("i");
+    dot.className = "dot";
+    const label = document.createElement("span");
+    const name = s.title || hostOf(s.url) || `Tab ${s.tabId}`;
+    label.textContent = s.approvals ? `${name.slice(0, 26)} · needs you` : name.slice(0, 32);
+    btn.append(dot, label);
+    btn.addEventListener("click", () => send({ type: "focusTab", tabId: s.tabId }));
+    strip.append(btn);
+  }
+  renderRunningNote();
+}
+
+/* A run can pause if Firefox suspends the background page. Say so while busy. */
+function renderRunningNote() {
+  const note = $("runningNote");
+  if (!note) return;
+  const busy = app.busy || (app.sessions || []).some((s) => s.busy);
+  note.hidden = !busy;
+}
+
+/* ------------------------------------------------------------------ */
+/* Packs                                                               */
+/* ------------------------------------------------------------------ */
+
+function packCard(pack, remoteOnly = false) {
+  const card = document.createElement("div");
+  card.className = "pack-card";
+
+  const icon = document.createElement("img");
+  icon.className = "pack-icon";
+  icon.alt = "";
+  if (pack.icon) icon.src = pack.icon;
+  else icon.hidden = true;
+
+  const main = document.createElement("div");
+  main.className = "pack-main";
+  const title = document.createElement("div");
+  title.className = "pack-title";
+  const name = document.createElement("span");
+  name.textContent = pack.name || pack.id;
+  title.append(name);
+  if (!remoteOnly && pack.version) {
+    const version = document.createElement("span");
+    version.className = "pack-version";
+    version.textContent = `v${pack.version}`;
+    title.append(version);
+  }
+  if (remoteOnly) {
+    const tag = document.createElement("span");
+    tag.className = "pack-version";
+    tag.textContent = "new";
+    title.append(tag);
+  }
+  const desc = document.createElement("p");
+  desc.className = "pack-desc";
+  desc.textContent = remoteOnly
+    ? "This pack is in the repository but not in this build. Update FoxAgent to install it."
+    : pack.description || "";
+  main.append(title, desc);
+  if (!remoteOnly && Array.isArray(pack.hosts) && pack.hosts.length) {
+    const hosts = document.createElement("div");
+    hosts.className = "pack-hosts";
+    hosts.textContent = pack.hosts.join(", ");
+    main.append(hosts);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "pack-actions";
+  if (!remoteOnly) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = pack.enabled ? "btn ghost sm" : "btn primary sm";
+    toggle.textContent = pack.enabled ? "Remove" : "Install";
+    toggle.addEventListener("click", () => {
+      toggle.disabled = true;
+      send({ type: "setPack", id: pack.id, enabled: !pack.enabled });
+    });
+    const details = document.createElement("button");
+    details.type = "button";
+    details.className = "btn ghost sm";
+    details.textContent = "Details";
+    details.addEventListener("click", () => send({ type: "getPackDesc", id: pack.id }));
+    actions.append(toggle, details);
+  }
+
+  card.append(icon, main, actions);
+  return card;
+}
+
+function renderPacks() {
+  const list = $("packList");
+  if (!list) return;
+  const packs = Array.isArray(app.packs) ? app.packs : [];
+  const known = new Set(packs.map((p) => p.id));
+  const remoteNew = (app.packsRemote?.newPacks || []).filter((id) => !known.has(id));
+  list.replaceChildren();
+  if (!packs.length && !remoteNew.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No packs in this build.";
+    list.append(empty);
+    return;
+  }
+  for (const pack of packs) list.append(packCard(pack));
+  for (const id of remoteNew) list.append(packCard({ id, name: id }, true));
+}
+
+function showPackDetail(detail) {
+  app.packDetail = detail;
+  $("packDetailName").textContent = detail.id || "";
+  $("packDetailText").textContent = detail.text || "";
+  $("packDetail").hidden = false;
+  $("packDetail").scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+/* ------------------------------------------------------------------ */
+/* Updates                                                             */
+/* ------------------------------------------------------------------ */
+
+function renderUpdateBanner() {
+  const banner = $("updateBanner");
+  if (!banner) return;
+  const update = app.update;
+  if (!update?.available) {
+    banner.hidden = true;
+    return;
+  }
+  banner.hidden = false;
+  $("updateTitle").textContent = `FoxAgent ${update.latest} is available`;
+  const asset = update.asset?.name ? `It downloads ${update.asset.name} and opens the release page.` : "It opens the release page.";
+  $("updateText").textContent = `You are on ${update.current}. ${asset} Firefox installs signed add-ons only.`;
+  $("autoUpdateBanner").checked = Boolean(app.settings?.autoUpdate);
+  $("updateBtn").textContent = "Update";
+  $("updateBtn").disabled = false;
+}
+
+function applyUpdate(update) {
+  app.update = update && update.available ? update : null;
+  renderUpdateBanner();
+}
+
+function setUpdateStatus(text, level = "") {
+  const el = $("updateStatus");
+  if (!el) return;
+  el.textContent = text || "";
+  el.dataset.level = level;
+}
+
 function onMessage(msg) {
   if (!msg || typeof msg !== "object") return;
+  // Session events carry their tab id: ignore another tab's stream, keep its chip.
+  const mine = msg.tabId == null || app.tabId == null || String(msg.tabId) === String(app.tabId);
   switch (msg.type) {
     case "state":
       applyState(msg);
       break;
 
+    case "tab":
+      applyTab(msg);
+      break;
+
+    case "sessions":
+      app.sessions = Array.isArray(msg.sessions) ? msg.sessions : [];
+      renderSessionStrip();
+      break;
+
+    case "packs":
+      app.packs = Array.isArray(msg.packs) ? msg.packs : [];
+      renderPacks();
+      break;
+
+    case "packsRemote":
+      app.packsRemote = msg.data || null;
+      renderPacks();
+      break;
+
+    case "packDesc":
+      showPackDetail({ id: msg.id, text: msg.text });
+      break;
+
+    case "update":
+      applyUpdate(msg.update);
+      break;
+
+    case "updateStatus":
+      if (msg.error) setUpdateStatus(msg.error, "error");
+      else if (msg.update) {
+        setUpdateStatus(
+          msg.update.available ? `Version ${msg.update.latest} is available.` : `Up to date (${msg.update.current}).`,
+          "ok",
+        );
+      }
+      break;
+
+    case "updateDone":
+      $("updateBtn").textContent = "Release opened";
+      $("updateBtn").disabled = true;
+      break;
+
+    case "session_removed":
+      if (String(msg.tabId) === String(app.tabId)) app.tabId = null;
+      break;
+
     case "item":
-      if (msg.item) appendTranscript(msg.item);
+      if (mine && msg.item) appendTranscript(msg.item);
       break;
 
     case "assistant_start":
-      startStreaming();
+      if (mine) startStreaming();
       break;
 
     case "delta":
-      if (msg.text) onDelta(msg.text);
+      if (mine && msg.text) onDelta(msg.text);
       break;
 
     case "assistant_end":
-      endStreaming(msg);
+      if (mine) endStreaming(msg);
       break;
 
     case "phase":
-      setStatus(msg.step ? `step ${msg.step}/${msg.maxSteps} · thinking` : "thinking", true);
+      if (mine) setStatus(msg.step ? `step ${msg.step}/${msg.maxSteps} · thinking` : "thinking", true);
       break;
 
     case "tool_start": {
+      if (!mine) break;
       const call = msg.call || {};
       setStatus(`${call.name}${call.summary ? " · " + call.summary : ""}`, true);
       break;
     }
 
-    case "tool_end": {
-      setStatus(msg.name ? `${msg.name} ${msg.ok ? "finished" : "failed"}` : "tool finished", false);
+    case "tool_end":
+      if (mine) setStatus(msg.name ? `${msg.name} ${msg.ok ? "finished" : "failed"}` : "tool finished", false);
       break;
-    }
 
     case "confirm":
+      if (!mine) {
+        showToast(`${msg.request?.tabTitle || "Another tab"} needs your approval.`, "warn");
+        break;
+      }
       showPanel("chat");
       setStatus("waiting for your approval", true);
       approvalCard(msg.request);
       break;
 
     case "ask":
+      if (!mine) {
+        showToast(`${msg.request?.tabTitle || "Another tab"} needs your answer.`, "warn");
+        break;
+      }
       showPanel("chat");
       setStatus("waiting for your answer", true);
       askCard(msg.request);
@@ -1280,11 +1573,17 @@ function onMessage(msg) {
 
     case "confirm_expired":
     case "ask_expired":
+      if (!mine) break;
       clearPendingUi(msg.id);
       showToast("That prompt expired. The agent was told you did not respond.", "warn");
       break;
 
+    case "pending_resolved":
+      clearPendingUi(msg.id);
+      break;
+
     case "pending_clear":
+      if (!mine) break;
       $("pending").replaceChildren();
       app.pending.clear();
       break;
@@ -1329,17 +1628,14 @@ function onMessage(msg) {
       $("dryRun").checked = Boolean(app.settings.dryRun);
       break;
 
-    case "tab":
-      app.tab = msg.tab;
-      renderTab();
-      break;
-
     case "busy":
+      if (!mine) break;
       setBusy(Boolean(msg.busy));
       if (!msg.busy) setStatus("", false);
       break;
 
     case "notes":
+      if (!mine) break;
       app.notes = msg.notes || [];
       renderNotes();
       break;
@@ -1350,12 +1646,13 @@ function onMessage(msg) {
       break;
 
     case "reset":
+      if (!mine) break;
       app.transcript = [];
       app.streaming = null;
       $("pending").replaceChildren();
       app.pending.clear();
       renderTranscript(true);
-      showToast("New conversation.", "success");
+      showToast("New conversation in this tab.", "success");
       break;
 
     case "toast":
@@ -1399,9 +1696,9 @@ function initEvents() {
       showToast("Stop the current task before starting a new conversation.", "warn");
       return;
     }
-    if (app.transcript.length && !confirm("Start a new conversation? The current transcript is cleared.")) return;
+    if (app.transcript.length && !confirm("Start a new conversation in this tab? Its transcript is cleared.")) return;
     showPanel("chat");
-    send({ type: "reset" });
+    send({ type: "reset", tabId: app.tabId });
   });
   $("backToChat").addEventListener("click", () => showPanel("chat"));
   $("welcomeTasks").addEventListener("click", () => showPanel("tasks"));
@@ -1410,6 +1707,35 @@ function initEvents() {
     showPanel("models");
   });
   $("modelsBack").addEventListener("click", () => showPanel("chat"));
+
+  const setAutoUpdate = (on) => {
+    send({ type: "saveSettings", patch: { autoUpdate: on } });
+    if (app.settings) app.settings.autoUpdate = on;
+    $("autoUpdateBanner").checked = on;
+    $("setAutoUpdate").checked = on;
+  };
+  $("autoUpdateBanner").addEventListener("change", () => setAutoUpdate($("autoUpdateBanner").checked));
+  $("setAutoUpdate").addEventListener("change", () => setAutoUpdate($("setAutoUpdate").checked));
+  $("checkUpdatesBtn").addEventListener("click", () => {
+    setUpdateStatus("Checking GitHub releases…");
+    send({ type: "checkUpdate", force: true });
+  });
+  $("updateBtn").addEventListener("click", () => {
+    $("updateBtn").disabled = true;
+    $("updateBtn").textContent = "Downloading…";
+    send({ type: "downloadUpdate" });
+  });
+  $("updateClose").addEventListener("click", () => {
+    const version = app.update?.latest;
+    $("updateBanner").hidden = true;
+    if (version) send({ type: "dismissUpdate", version });
+  });
+  $("packsRefresh").addEventListener("click", () => {
+    $("packsRefresh").disabled = true;
+    send({ type: "checkPacks" });
+    setTimeout(() => { $("packsRefresh").disabled = false; }, 1500);
+  });
+  $("packDetailClose").addEventListener("click", () => { $("packDetail").hidden = true; });
   $("settingsChangeModel").addEventListener("click", () => {
     app.modelsProvider = app.settings?.provider || null;
     showPanel("models");
@@ -1426,7 +1752,7 @@ function initEvents() {
       showToast("Pick a model first.", "warn");
       return;
     }
-    send({ type: "send", text });
+    send({ type: "send", text, tabId: app.tabId });
     $("input").value = "";
     resizeInput();
     setStatus("sending…", true);
@@ -1441,7 +1767,7 @@ function initEvents() {
   $("input").addEventListener("input", resizeInput);
 
   $("stopBtn").addEventListener("click", () => {
-    send({ type: "abort" });
+    send({ type: "abort", tabId: app.tabId });
     setStatus("stopping…", true);
   });
 
@@ -1473,12 +1799,12 @@ function initEvents() {
       showToast("Stop the current task before resetting the conversation.", "warn");
       return;
     }
-    if (!confirm("Clear the transcript and the model's conversation history?")) return;
-    send({ type: "reset" });
+    if (!confirm("Clear this tab's transcript and the model's conversation history?")) return;
+    send({ type: "reset", tabId: app.tabId });
     showPanel("chat");
   });
 
-  $("clearNotes").addEventListener("click", () => send({ type: "clearNotes" }));
+  $("clearNotes").addEventListener("click", () => send({ type: "clearNotes", tabId: app.tabId }));
   $("clearLog").addEventListener("click", () => send({ type: "clearLog" }));
   $("exportLog").addEventListener("click", () => send({ type: "exportLog" }));
 

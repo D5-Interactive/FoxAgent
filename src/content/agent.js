@@ -9,7 +9,7 @@
   window.__foxAgentBridge = true;
 
   const HIDDEN_TAGS = new Set([
-    "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "svg", "SVG", "CANVAS", "IFRAME",
+    "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "svg", "SVG", "CANVAS",
     "OBJECT", "EMBED", "VIDEO", "AUDIO", "META", "LINK", "HEAD", "TITLE",
   ]);
   const SKIP_TAGS = new Set(["NAV", "FOOTER", "ASIDE", "DIALOG"]);
@@ -46,10 +46,15 @@
       return "";
     }
   };
-  const isPassword = (el) => el instanceof HTMLInputElement && el.type === "password";
+  const tagOf = (el) => String(el?.tagName || "").toLowerCase();
+  const viewOf = (el) => el?.ownerDocument?.defaultView || window;
+  const isInput = (el) => tagOf(el) === "input";
+  const isTextarea = (el) => tagOf(el) === "textarea";
+  const isSelect = (el) => tagOf(el) === "select";
+  const isPassword = (el) => isInput(el) && el.type === "password";
 
   function hidden(el) {
-    if (!(el instanceof Element)) return true;
+    if (!el || el.nodeType !== 1 || typeof el.getBoundingClientRect !== "function") return true;
     if (hiddenCache.has(el)) return hiddenCache.get(el);
     let result = false;
     if (el.hidden || el.getAttribute("aria-hidden") === "true") result = true;
@@ -73,7 +78,9 @@
     const aria = el.getAttribute("aria-label");
     if (aria) return clean(aria);
     if (el.id) {
-      const lab = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      const scope = el.getRootNode?.() || document;
+      const lab = scope.querySelector?.(`label[for="${CSS.escape(el.id)}"]`)
+        || document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
       if (lab) return clean(lab.innerText);
     }
     const wrapping = el.closest("label");
@@ -102,20 +109,88 @@
     return ref;
   }
 
+  /*
+   * Modern pages put controls behind open shadow roots and same-origin
+   * iframes. Walk those too so snapshot/query can see the real form.
+   */
+  function roots() {
+    const out = [];
+    const seen = new Set();
+    const visit = (root) => {
+      if (!root || seen.has(root)) return;
+      seen.add(root);
+      out.push(root);
+      for (const el of root.querySelectorAll("*")) {
+        if (el.shadowRoot) visit(el.shadowRoot);
+        if (el.tagName === "IFRAME") {
+          try { if (el.contentDocument) visit(el.contentDocument); } catch {}
+        }
+      }
+    };
+    visit(document);
+    return out;
+  }
+
+  function inViewport(el) {
+    const r = el.getBoundingClientRect();
+    return r.bottom > 0 && r.right > 0 && r.top < (window.innerHeight || 0) && r.left < (window.innerWidth || 0);
+  }
+
+  function rectOf(el) {
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+  }
+
+  function visibleText() {
+    let out = document.body?.innerText || "";
+    for (const root of roots()) {
+      if (root === document) continue;
+      const t = root.body?.innerText || root.host?.innerText || "";
+      if (t) out += "\n" + t;
+    }
+    return clean(out);
+  }
+
   function snapshot(opts = {}) {
     const limit = clamp(opts.maxElements, 20, 400, 200);
-    const lines = [];
     const outline = [];
-    for (const h of document.querySelectorAll("h1,h2,h3")) {
-      if (outline.length >= 30) break;
-      if (hidden(h)) continue;
-      const t = clean(h.innerText);
-      if (t) outline.push(`${"  ".repeat(Number(h.tagName[1]) - 1)}${h.tagName.toLowerCase()} ${t.slice(0, 100)}`);
+    const all = roots();
+    for (const root of all) {
+      for (const h of root.querySelectorAll("h1,h2,h3")) {
+        if (outline.length >= 30) break;
+        if (hidden(h)) continue;
+        const t = clean(h.innerText);
+        if (t) outline.push(`${"  ".repeat(Number(h.tagName[1]) - 1)}${h.tagName.toLowerCase()} ${t.slice(0, 100)}`);
+      }
     }
+
+    /*
+     * On small screens a 200 element cap fills with navigation. Rank controls
+     * that are on screen and directly actionable first, then keep DOM order as
+     * the tie-breaker.
+     */
+    const candidates = [];
+    let order = 0;
+    let total = 0;
+    for (const root of all) {
+      for (const el of root.querySelectorAll(CLICKABLE)) {
+        total++;
+        if (isPassword(el) || hidden(el)) continue;
+        const tag = el.tagName;
+        let score = inViewport(el) ? 100 : 0;
+        if (tag === "BUTTON" || el.type === "submit" || el.getAttribute("role") === "button") score += 25;
+        if (tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable) score += 18;
+        if (tag === "SELECT") score += 14;
+        if (tag === "A") score += 4;
+        candidates.push({ el, score, order: order++ });
+      }
+    }
+    candidates.sort((a, b) => b.score - a.score || a.order - b.order);
+
+    const lines = [];
     const seen = new Set();
-    for (const el of document.querySelectorAll(CLICKABLE)) {
+    for (const { el } of candidates) {
       if (lines.length >= limit) break;
-      if (isPassword(el) || hidden(el)) continue;
       if (seen.has(el)) continue;
       seen.add(el);
       const ref = refFor(el);
@@ -125,19 +200,23 @@
       if (type) bits.push(type);
       const role = el.getAttribute("role");
       if (role) bits.push(role);
+      if (el.isContentEditable) bits.push("editable");
       if (el.getAttribute("aria-expanded")) bits.push("expanded=" + el.getAttribute("aria-expanded"));
       if (el.disabled || el.getAttribute("aria-disabled") === "true") bits.push("disabled");
       if (el.checked) bits.push("checked");
       if (el.getAttribute("aria-selected") === "true") bits.push("selected");
+      if (!inViewport(el)) bits.push("offscreen");
       const name = labelOf(el);
       let line = `${ref} <${tag}${bits.length ? " " + bits.join(" ") : ""}> ${JSON.stringify(name)}`;
+      const placeholder = el.getAttribute("placeholder");
+      if (placeholder && placeholder !== name) line += ` placeholder=${JSON.stringify(clean(placeholder).slice(0, 60))}`;
       if (tag === "a") {
         const u = absolute(el.getAttribute("href"));
         if (u) line += ` -> ${u}`;
       } else if (tag === "select") {
-        const vals = [...el.options].slice(0, 10).map((o) => o.value === o.textContent.trim() ? o.value : `${o.value}=${clean(o.textContent)}`);
+        const vals = [...el.options].slice(0, 10).map((o) => (o.value === o.textContent.trim() ? o.value : `${o.value}=${clean(o.textContent)}`));
         if (vals.length) line += ` options=[${vals.join(", ")}]`;
-      } else if (tag === "input" && el.type !== "password" && el.value) {
+      } else if ((tag === "input" || tag === "textarea") && el.type !== "password" && el.value) {
         line += ` value=${JSON.stringify(clean(el.value).slice(0, 80))}`;
       }
       lines.push(line);
@@ -147,7 +226,7 @@
       title: document.title,
       outline,
       elements: lines,
-      total: document.querySelectorAll(CLICKABLE).length,
+      total,
     };
   }
 
@@ -198,6 +277,22 @@
 
     const inner = () => mdChildren(el, ctx);
     const block = (s) => "\n\n" + s.trim() + "\n\n";
+
+    // Read what modern apps render: open shadow roots and same-origin frames.
+    if (el.shadowRoot) {
+      const shadow = mdChildren(el.shadowRoot, { ...ctx, root: el.shadowRoot }).trim();
+      return shadow ? block(shadow) : "";
+    }
+    if (tag === "IFRAME") {
+      try {
+        const doc = el.contentDocument;
+        if (doc?.body) {
+          const framed = mdChildren(doc.body, { ...ctx, root: doc.body }).trim();
+          return framed ? block(framed) : "";
+        }
+      } catch {}
+      return "";
+    }
 
     switch (tag) {
       case "BR": return "\n";
@@ -398,17 +493,228 @@
     if (el.disabled) throw new Error(`Element ${opts.ref} is disabled.`);
     if (typeof el.click === "function") el.click();
     else {
+      const view = viewOf(el);
       for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
-        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+        el.dispatchEvent(new view.MouseEvent(type, { bubbles: true, cancelable: true, view }));
       }
     }
     return { ref: opts.ref, label: name };
   }
 
+  /*
+   * Click by visible label. Refs go stale and small models reuse them, so a
+   * text match is both shorter and more reliable for "click Next".
+   */
+  function clickText(opts) {
+    const wanted = clean(opts.text).toLowerCase();
+    if (!wanted) throw new Error("page.clickText needs the visible text to click.");    const exact = Boolean(opts.exact);
+    const role = clean(opts.role).toLowerCase();
+    const matches = [];
+    for (const root of roots()) {
+      for (const el of root.querySelectorAll(CLICKABLE)) {
+        if (isPassword(el) || hidden(el) || el.disabled) continue;
+        if (role && String(el.getAttribute("role") || el.tagName).toLowerCase() !== role) continue;
+        const label = labelOf(el);
+        const lower = clean(label).toLowerCase();
+        if (!lower) continue;
+        const isExact = lower === wanted;
+        const starts = lower.startsWith(wanted);
+        if (isExact || starts || (!exact && lower.includes(wanted))) {
+          matches.push({ el, label, rank: isExact ? 0 : starts ? 1 : 2, offscreen: inViewport(el) ? 0 : 1 });
+        }
+        if (matches.length >= 60) break;
+      }
+    }
+    if (!matches.length) {
+      throw new Error(`No visible button or link matches ${JSON.stringify(opts.text)}. Use page.snapshot or page.query to see the labels.`);
+    }
+    matches.sort((a, b) => a.rank - b.rank || a.offscreen - b.offscreen);
+    const nth = Math.max(0, Number(opts.nth) || 0);
+    const pick = matches[nth];
+    if (!pick) throw new Error(`Only ${matches.length} element(s) match ${JSON.stringify(opts.text)}; nth=${nth} is out of range.`);
+    const ref = refFor(pick.el);
+    click({ ref });
+    return {
+      ref,
+      label: pick.label.slice(0, 120),
+      matches: matches.length,
+      others: matches
+        .map((m, i) => ({ label: m.label.slice(0, 60), i }))
+        .filter((m) => m.i !== nth)
+        .slice(0, 4),
+    };
+  }
+
+  function deepElementFromPoint(x, y) {
+    let el = document.elementFromPoint(x, y);
+    for (let i = 0; i < 5 && el; i++) {
+      if (el.shadowRoot) {
+        const inner = el.shadowRoot.elementFromPoint(x, y);
+        if (inner && inner !== el) { el = inner; continue; }
+      }
+      if (el.tagName === "IFRAME") {
+        try {
+          const r = el.getBoundingClientRect();
+          const inner = el.contentDocument?.elementFromPoint(x - r.left, y - r.top);
+          if (inner && inner !== el) { el = inner; continue; }
+        } catch {}
+      }
+      break;
+    }
+    return el;
+  }
+
+  function clickAt(opts = {}) {
+    const x = Number(opts.x);
+    const y = Number(opts.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("page.clickAt needs numeric x and y.");
+    const el = deepElementFromPoint(x, y);
+    if (!el) throw new Error(`Nothing is visible at ${x},${y}. Take a fresh screenshot and use a point inside a control.`);
+    if (isPassword(el)) throw new Error("That point is a password field. Ask the user to sign in.");
+    const ref = refFor(el);
+    click({ ref });
+    return { ref, label: labelOf(el).slice(0, 120), tag: el.tagName.toLowerCase(), x, y };
+  }
+
+  function query(opts = {}) {
+    const selector = text(opts.selector).trim();
+    const wanted = clean(opts.text).toLowerCase();
+    const role = clean(opts.role).toLowerCase();
+    const limit = clamp(opts.limit, 1, 200, 50);
+    const items = [];
+    for (const root of roots()) {
+      let nodes;
+      try {
+        nodes = root.querySelectorAll(selector || CLICKABLE);
+      } catch {
+        throw new Error(`Bad CSS selector: ${selector}`);
+      }
+      for (const el of nodes) {
+        if (hidden(el)) continue;
+        if (role && String(el.getAttribute("role") || el.tagName).toLowerCase() !== role) continue;
+        const label = labelOf(el);
+        if (wanted && !clean(label).toLowerCase().includes(wanted)) continue;
+        items.push({
+          ref: refFor(el),
+          tag: el.tagName.toLowerCase(),
+          role: el.getAttribute("role") || "",
+          label: label.slice(0, 160),
+          type: el.getAttribute("type") || "",
+          value: el.value != null ? clean(el.value).slice(0, 80) : "",
+          disabled: Boolean(el.disabled),
+          rect: rectOf(el),
+        });
+        if (items.length >= limit) break;
+      }
+      if (items.length >= limit) break;
+    }
+    return { url: location.href, title: document.title, count: items.length, items };
+  }
+
+  function editable(el) {
+    return isInput(el) || isTextarea(el) || isSelect(el) || el.isContentEditable;
+  }
+
+  function findField(spec = {}) {
+    if (spec.ref) return element(spec.ref);
+    const wanted = clean(spec.label || spec.placeholder || spec.name || "").toLowerCase();
+    if (!wanted) throw new Error("Each field needs a ref, label, placeholder or name.");
+    for (const root of roots()) {
+      for (const el of root.querySelectorAll("input, textarea, select, [contenteditable=true]")) {
+        if (isPassword(el) || hidden(el) || el.disabled || !editable(el)) continue;
+        const bits = [
+          labelOf(el),
+          el.getAttribute("placeholder"),
+          el.getAttribute("name"),
+          el.getAttribute("aria-label"),
+        ].filter(Boolean).map((v) => clean(v).toLowerCase());
+        if (bits.some((b) => b === wanted || b.includes(wanted))) return el;
+      }
+    }
+    throw new Error(`No visible field matches ${JSON.stringify(spec.label || spec.placeholder || spec.name)}.`);
+  }
+
+  function fill(opts = {}) {
+    const fields = Array.isArray(opts.fields) ? opts.fields.slice(0, 20) : [];
+    if (!fields.length) throw new Error("page.fill needs a fields array.");
+    const results = [];
+    let last = null;
+    for (const spec of fields) {
+      try {
+        const el = findField(spec);
+        if (isSelect(el)) {
+          select({ ref: refFor(el), value: text(spec.value) });
+        } else {
+          type({ ref: refFor(el), text: text(spec.value), clear: spec.clear !== false });
+        }
+        last = el;
+        results.push({ field: (spec.label || spec.placeholder || spec.ref || "field").toString().slice(0, 80), ok: true });
+      } catch (e) {
+        results.push({ field: (spec.label || spec.placeholder || spec.ref || "field").toString().slice(0, 80), ok: false, error: String(e.message || e) });
+      }
+    }
+    let submitted = false;
+    if (opts.submit && last) {
+      const form = last.form || last.closest?.("form");
+      if (form && typeof form.requestSubmit === "function") {
+        form.requestSubmit();
+        submitted = true;
+      }
+    }
+    return { results, submitted };
+  }
+
+  function press(opts = {}) {
+    const el = opts.ref ? element(opts.ref) : document.activeElement;
+    const key = text(opts.key || "Enter");
+    const codes = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8, ArrowDown: 40, ArrowUp: 38, ArrowLeft: 37, ArrowRight: 39 };
+    el?.focus?.();
+    const view = el ? viewOf(el) : window;
+    for (const type of ["keydown", "keypress", "keyup"]) {
+      el?.dispatchEvent(new view.KeyboardEvent(type, {
+        key, code: key, keyCode: codes[key] || 0, which: codes[key] || 0, bubbles: true, cancelable: true,
+      }));
+    }
+    let submitted = false;
+    if (key === "Enter" && el) {
+      const form = el.form || el.closest?.("form");
+      if (form && typeof form.requestSubmit === "function") {
+        form.requestSubmit();
+        submitted = true;
+      }
+    }
+    return { key, submitted, target: el ? labelOf(el).slice(0, 80) : "(none)" };
+  }
+
+  async function waitFor(opts = {}) {
+    const timeout = clamp(opts.timeoutMs, 200, 30000, 6000);
+    const selector = text(opts.selector).trim();
+    const wanted = clean(opts.text).toLowerCase();
+    const gone = Boolean(opts.gone);
+    const started = Date.now();
+    const present = () => {
+      if (selector) {
+        for (const root of roots()) {
+          try { if (root.querySelector(selector)) return true; } catch { throw new Error(`Bad CSS selector: ${selector}`); }
+        }
+        return false;
+      }
+      if (!wanted) return true;
+      return visibleText().toLowerCase().includes(wanted);
+    };
+    while (Date.now() - started < timeout) {
+      const here = present();
+      if (gone ? !here : here) return { ok: true, elapsed: Date.now() - started, state: gone ? "gone" : "present" };
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    throw new Error(`Timed out after ${timeout}ms waiting for ${selector ? selector : `text ${JSON.stringify(opts.text)}`}${gone ? " to disappear" : ""}.`);
+  }
+
   function setNativeValue(el, value) {
-    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
-      : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype
-      : HTMLInputElement.prototype;
+    const view = viewOf(el);
+    const proto = isTextarea(el) ? view.HTMLTextAreaElement.prototype
+      : isSelect(el) ? view.HTMLSelectElement.prototype
+      : view.HTMLInputElement.prototype;
     const desc = Object.getOwnPropertyDescriptor(proto, "value");
     if (desc?.set) desc.set.call(el, value);
     else el.value = value;
@@ -420,23 +726,25 @@
     if (el.isContentEditable) {
       el.focus();
       el.textContent = text(opts.text);
-    } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    } else if (isInput(el) || isTextarea(el)) {
       el.focus();
       if (opts.clear === false) setNativeValue(el, text(el.value) + text(opts.text));
       else setNativeValue(el, text(opts.text));
     } else {
       throw new Error(`Ref ${opts.ref} is not an editable field.`);
     }
-    el.dispatchEvent(new InputEvent("input", { bubbles: true, data: text(opts.text), inputType: "insertText" }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
+    const view = viewOf(el);
+    el.dispatchEvent(new view.InputEvent("input", { bubbles: true, data: text(opts.text), inputType: "insertText" }));
+    el.dispatchEvent(new view.Event("change", { bubbles: true }));
     if (opts.submit) {
       const form = el.form || el.closest("form");
       if (form) {
         if (typeof form.requestSubmit === "function") form.requestSubmit();
         else form.submit();
       } else {
+        const submitView = viewOf(el);
         for (const t of ["keydown", "keypress", "keyup"]) {
-          el.dispatchEvent(new KeyboardEvent(t, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+          el.dispatchEvent(new submitView.KeyboardEvent(t, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
         }
       }
     }
@@ -445,13 +753,13 @@
 
   function select(opts) {
     const el = element(opts.ref);
-    if (!(el instanceof HTMLSelectElement)) throw new Error(`Ref ${opts.ref} is not a <select>.`);
+    if (!isSelect(el)) throw new Error(`Ref ${opts.ref} is not a <select>.`);
     const wanted = text(opts.value);
     const opt = [...el.options].find((o) => o.value === wanted)
       || [...el.options].find((o) => clean(o.textContent) === wanted);
     if (!opt) throw new Error(`No option ${JSON.stringify(wanted)}. Options: ${[...el.options].map((o) => o.value).join(", ")}`);
     setNativeValue(el, opt.value);
-    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new (viewOf(el)).Event("change", { bubbles: true }));
     return { ref: opts.ref, value: opt.value, label: clean(opt.textContent) };
   }
 
@@ -538,6 +846,12 @@
       case "read": return read(msg.args);
       case "links": return links(msg.args);
       case "click": return click(msg.args);
+      case "clickText": return clickText(msg.args);
+      case "clickAt": return clickAt(msg.args);
+      case "query": return query(msg.args);
+      case "fill": return fill(msg.args);
+      case "press": return press(msg.args);
+      case "waitFor": return waitFor(msg.args);
       case "type": return type(msg.args);
       case "select": return select(msg.args);
       case "scroll": return scroll(msg.args);
@@ -546,8 +860,9 @@
     }
   }
 
-  browser.runtime.onMessage.addListener((msg) => {
+  browser.runtime.onMessage.addListener((msg, sender) => {
     if (!msg || msg.__foxagent !== true) return undefined;
+    if (sender?.id && sender.id !== browser.runtime.id) return undefined;
     return handle(msg)
       .then((result) => ({ ok: true, result }))
       .catch((e) => ({ ok: false, error: String(e?.message || e) }));

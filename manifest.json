@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FoxAgent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A browser agent in the Firefox sidebar. Reads pages, drives the UI, and runs tasks with local model servers or your own cloud API keys.",
   "browser_specific_settings": {
     "gecko": {
@@ -32,7 +32,8 @@
     "scripts": [
       "src/background/main.js"
     ],
-    "type": "module"
+    "type": "module",
+    "persistent": false
   },
   "sidebar_action": {
     "default_title": "FoxAgent",

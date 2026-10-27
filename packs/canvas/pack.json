@@ -1,0 +1,8 @@
+{
+  "id": "canvas",
+  "name": "Canvas LMS",
+  "version": "1.0.0",
+  "description": "Read-only courses, assignments, scores, modules and to-do items for Canvas LMS, using your logged-in tab.",
+  "hosts": ["*.instructure.com", "canvas.*"],
+  "author": "D5 Interactive"
+}

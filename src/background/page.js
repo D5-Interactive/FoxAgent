@@ -10,18 +10,26 @@ export function isRestricted(url) {
   return !url || RESTRICTED.test(url) || url.startsWith("https://addons.mozilla.org");
 }
 
-export async function activeTab() {
-  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+export async function activeTab(windowId) {
+  const query = { active: true };
+  if (windowId != null) query.windowId = Number(windowId);
+  else query.currentWindow = true;
+  const [tab] = await browser.tabs.query(query);
   if (!tab) throw new Error("No active tab in this window.");
   return tab;
 }
 
-export async function resolveTab(tabId) {
-  if (tabId != null) {
+/*
+ * An explicit tabId always wins. Otherwise a run stays pinned to the tab that
+ * started it: switching tabs must not retarget an in-flight task.
+ */
+export async function resolveTab(tabId, pinnedTabId) {
+  const target = tabId ?? pinnedTabId;
+  if (target != null) {
     try {
-      return await browser.tabs.get(Number(tabId));
+      return await browser.tabs.get(Number(target));
     } catch {
-      throw new Error(`No tab with id ${tabId}.`);
+      throw new Error(`No tab with id ${target}. It may have been closed.`);
     }
   }
   return activeTab();
@@ -77,7 +85,7 @@ export async function callPage(tab, op, args = {}) {
   return res.result;
 }
 
-export async function tabInfo(tab) {
+export function tabInfo(tab) {
   if (!tab) return null;
   return { id: tab.id, url: tab.url, title: tab.title, active: tab.active };
 }

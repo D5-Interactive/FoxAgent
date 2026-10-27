@@ -1,0 +1,8 @@
+{
+  "id": "example",
+  "name": "Example pack",
+  "version": "1.0.0",
+  "description": "Copy this directory, rename the id, and add your own read-only tools and prompt.",
+  "hosts": ["*"],
+  "author": "Your name"
+}

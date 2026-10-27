@@ -201,7 +201,25 @@ function parseArgs(value) {
   return args && typeof args === "object" ? args : {};
 }
 
-function toAnthropicMessages(messages) {
+function anthropicBlocks(content) {
+  if (!Array.isArray(content)) return contentText(content) || "(empty)";
+  const blocks = [];
+  for (const part of content) {
+    if (!part) continue;
+    if (typeof part === "string") {
+      if (part) blocks.push({ type: "text", text: part });
+    } else if (part.type === "text" && part.text) {
+      blocks.push({ type: "text", text: part.text });
+    } else if (part.type === "image_url") {
+      const url = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
+      const match = String(url || "").match(/^data:([^;]+);base64,([\s\S]+)$/);
+      if (match) blocks.push({ type: "image", source: { type: "base64", media_type: match[1], data: match[2] } });
+    }
+  }
+  return blocks.length ? blocks : "(empty)";
+}
+
+export function toAnthropicMessages(messages) {
   const system = [];
   const out = [];
 
@@ -248,16 +266,22 @@ function toAnthropicMessages(messages) {
       continue;
     }
 
-    const text = contentText(message.content);
+    const content = anthropicBlocks(message.content);
     const last = out[out.length - 1];
     // Anthropic expects user and assistant turns to alternate. Merge any
-    // consecutive user turns (e.g. a new prompt after tool results or a
-    // compacted context note).
+    // consecutive user turns (e.g. an image after tool results or a compacted
+    // context note).
     if (last && last.role === "user") {
-      if (typeof last.content === "string") last.content += "\n\n" + (text || "(empty)");
-      else if (Array.isArray(last.content)) last.content.push({ type: "text", text: text || "(empty)" });
+      if (typeof content === "string") {
+        if (typeof last.content === "string") last.content += "\n\n" + content;
+        else last.content.push({ type: "text", text: content });
+      } else if (typeof last.content === "string") {
+        last.content = [{ type: "text", text: last.content }, ...content];
+      } else {
+        last.content.push(...content);
+      }
     } else {
-      out.push({ role: "user", content: text || "(empty)" });
+      out.push({ role: "user", content });
     }
   }
 

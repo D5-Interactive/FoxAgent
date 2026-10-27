@@ -27,9 +27,31 @@
     <nav class="tabs" role="tablist" aria-label="FoxAgent sections">
       <button class="tab" role="tab" data-panel="chat" aria-selected="true">Chat</button>
       <button class="tab" role="tab" data-panel="tasks">Tasks</button>
+      <button class="tab" role="tab" data-panel="packs">Packs</button>
       <button class="tab" role="tab" data-panel="activity">Activity</button>
       <button class="tab" role="tab" data-panel="models">Models</button>
     </nav>
+
+    <div id="updateBanner" class="update-banner" hidden>
+      <div class="update-copy">
+        <b id="updateTitle">Update available</b>
+        <p id="updateText"></p>
+        <label class="checkline">
+          <input type="checkbox" id="autoUpdateBanner">
+          <span>Tell me about new releases automatically</span>
+        </label>
+      </div>
+      <div class="row">
+        <button type="button" id="updateBtn" class="btn primary sm">Update</button>
+        <button type="button" id="updateClose" class="btn ghost sm">Close</button>
+      </div>
+    </div>
+
+    <div id="runningNote" class="running-note" hidden>
+      <b>Task running.</b> Keep this sidebar open. Closing it lets Firefox suspend FoxAgent and the task will pause.
+    </div>
+
+    <div id="sessionStrip" class="session-strip" hidden></div>
 
     <main>
       <section id="panel-chat" class="panel" role="tabpanel">
@@ -109,6 +131,33 @@
           <div class="footnote">
             <b>Tip:</b> tasks work best when the matching site is already open and logged in.
             FoxAgent never signs in for you.
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-packs" class="panel" role="tabpanel" hidden>
+        <div class="scroll">
+          <div class="section-head">
+            <div>
+              <h2>Packs</h2>
+              <p>Site-specific tools and playbooks. Install only the sites you use.</p>
+            </div>
+            <button type="button" class="btn ghost sm" id="packsRefresh">Check for new</button>
+          </div>
+
+          <div id="packList" class="pack-list"></div>
+
+          <div id="packDetail" class="pack-detail" hidden>
+            <div class="pack-detail-head">
+              <b id="packDetailName"></b>
+              <button type="button" class="btn ghost sm" id="packDetailClose">Close</button>
+            </div>
+            <pre id="packDetailText" class="pack-detail-text"></pre>
+          </div>
+
+          <div class="footnote">
+            Packs ship with FoxAgent. Installing enables one for this profile; nothing is downloaded or evaluated.
+            The check compares this list with the <span class="mono">packs/</span> directory in the repository.
           </div>
         </div>
       </section>
@@ -258,6 +307,14 @@
                 </select>
               </label>
               <label class="field">
+                <span>Vision</span>
+                <select id="setVision" class="input">
+                  <option value="auto">Auto: send screenshots when the model supports images</option>
+                  <option value="on">On: always allow screenshots</option>
+                  <option value="off">Off: never send images</option>
+                </select>
+              </label>
+              <label class="field">
                 <span>Context budget (characters)</span>
                 <input id="setContext" class="input" type="number" min="8000" max="400000" step="1000">
               </label>
@@ -310,6 +367,22 @@
                 <span>Trusted sites <em>actions run without asking</em></span>
                 <div id="trustedList" class="trusted-list"></div>
               </div>
+            </div>
+
+            <div class="group">
+              <div class="group-title">Updates</div>
+              <label class="checkline">
+                <input type="checkbox" id="setAutoUpdate">
+                <span>Tell me about new releases automatically</span>
+              </label>
+              <div class="row">
+                <button type="button" class="btn ghost" id="checkUpdatesBtn">Check now</button>
+                <span id="updateStatus" class="mini-status"></span>
+              </div>
+              <p class="field-hint">
+                FoxAgent asks the GitHub releases page. Firefox installs signed add-ons only, so Update downloads the
+                release package and opens the release page for the final step.
+              </p>
             </div>
 
             <div class="row sticky-row">

@@ -1,0 +1,8 @@
+{
+  "id": "outlook",
+  "name": "Outlook",
+  "version": "1.0.0",
+  "description": "A careful playbook for Outlook on the web: search, read mail, collect attachments, and draft without sending.",
+  "hosts": ["outlook.office.com", "outlook.office365.com", "outlook.live.com"],
+  "author": "D5 Interactive"
+}
