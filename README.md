@@ -153,6 +153,8 @@ FoxAgent requests `<all_urls>` to read the active tab. The site allowlist and pe
 
 ```
 FoxAgent/
+├── .github/workflows/
+│   └── release.yml            # Version bump to GitHub release
 ├── manifest.json              # MV3, sidebar_action, permissions
 ├── icons/                     # 16, 32, 48 and 96 px
 ├── packs/                     # Site packs, catalog, SDK and template
@@ -193,11 +195,17 @@ FoxAgent/
 
 ---
 
+## Releases
+
+Version bumps are released by CI. Change `version` in `manifest.json`, commit and push to `main`. The workflow in `.github/workflows/release.yml` checks that the version increased, runs the syntax, logic and lint checks, builds the package, creates the `v<version>` tag and publishes a GitHub release with the zip attached. Running the workflow manually from the Actions tab releases the current version. Existing tags are skipped, so a re-run is safe.
+
+---
+
 ## Development
 
 ```bash
 # Lint (must stay at 0 errors and 0 warnings)
-npx web-ext@8 lint --ignore-files "tests/**" --ignore-files ".opencode/**"
+npx web-ext@8 lint --ignore-files "tests/**" --ignore-files ".github/**" --ignore-files ".opencode/**"
 
 # Syntax check
 for f in src/background/*.js src/sidebar/*.js src/content/*.js packs/*.js packs/*/*.js; do
@@ -211,7 +219,7 @@ node --test tests/logic.test.mjs
 uv run --with playwright python tests/page_bridge.py
 
 # Build
-npx web-ext@8 build --overwrite-dest --ignore-files "tests/**" --ignore-files ".opencode/**"
+npx web-ext@8 build --overwrite-dest --ignore-files "tests/**" --ignore-files ".github/**" --ignore-files ".opencode/**"
 ```
 
 ---

@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - manifest.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Read version and decide
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./manifest.json').version")
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "Tag $TAG already exists; nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BEFORE="${{ github.event.before }}"
+          if [ "${{ github.event_name }}" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            OLD=$(git show "$BEFORE:manifest.json" 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" || true)
+            if [ -z "$OLD" ] || [ "$OLD" = "$VERSION" ]; then
+              echo "No version change ($OLD -> $VERSION); skipping."
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! node -e 'const p=s=>String(s).split(".").map(Number);const a=p(process.argv[1]),b=p(process.argv[2]);for(let i=0;i<3;i++){if((b[i]||0)>(a[i]||0))process.exit(0);if((b[i]||0)<(a[i]||0))process.exit(1)}process.exit(1)' "$OLD" "$VERSION"; then
+              echo "Version did not increase ($OLD -> $VERSION); skipping."
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Version bump $OLD -> $VERSION"
+          fi
+
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+      - name: Checks
+        if: steps.version.outputs.release == 'true'
+        run: |
+          for f in src/background/*.js src/sidebar/*.js src/content/*.js packs/*.js packs/*/*.js; do
+            node --check "$f"
+          done
+          node --test tests/logic.test.mjs
+          npx --yes web-ext@8 lint --ignore-files "tests/**" --ignore-files ".github/**" --ignore-files ".opencode/**"
+
+      - name: Build
+        if: steps.version.outputs.release == 'true'
+        run: |
+          npx --yes web-ext@8 build --overwrite-dest \
+            --ignore-files "tests/**" \
+            --ignore-files ".github/**" \
+            --ignore-files ".opencode/**"
+
+      - name: Publish
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          SUBJECT=$(git log -1 --pretty=%s)
+          DETAILS=$(printf '%s' "$SUBJECT" | sed -E 's/^\[ o7 \]: [^|]+ \| //; s/ \| [^|]+$//')
+          if [ -z "$DETAILS" ] || [ "$DETAILS" = "$SUBJECT" ]; then DETAILS="$SUBJECT"; fi
+
+          cat > notes.md <<EOF
+          ## Changes
+          $DETAILS
+
+          Version $VERSION.
+
+          ## Install
+          Download foxagent-$VERSION.zip, extract it, then load manifest.json from about:debugging.
+
+          Firefox installs signed add-ons permanently. This package is a temporary add-on for development and manual installs.
+          EOF
+
+          gh release create "$TAG" "web-ext-artifacts/foxagent-$VERSION.zip" \
+            --target "$GITHUB_SHA" \
+            --title "FoxAgent $VERSION" \
+            --notes-file notes.md
+
+          echo "Released $TAG"
