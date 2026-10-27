@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FoxAgent</title>
+  <link rel="stylesheet" href="sidebar.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <img class="logo" src="../../icons/fox-96.png" alt="">
+        <div class="brand-text">
+          <span class="name">FoxAgent</span>
+          <span class="conn" id="conn" data-state="connecting"><i></i><span id="connLabel">connecting</span></span>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button id="modelBtn" class="model-btn" title="Choose model">No model</button>
+        <button id="newChatBtn" class="icon-btn" title="New conversation" aria-label="New conversation">&#8635;</button>
+        <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">&#9881;</button>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist" aria-label="FoxAgent sections">
+      <button class="tab" role="tab" data-panel="chat" aria-selected="true">Chat</button>
+      <button class="tab" role="tab" data-panel="tasks">Tasks</button>
+      <button class="tab" role="tab" data-panel="activity">Activity</button>
+      <button class="tab" role="tab" data-panel="models">Models</button>
+    </nav>
+
+    <main>
+      <section id="panel-chat" class="panel" role="tabpanel">
+        <div class="scroll" id="chatScroll">
+          <div id="welcome" class="welcome" hidden>
+            <div class="welcome-mark"><img src="../../icons/fox-96.png" alt=""></div>
+            <h1>Your browser,<br>with a brain you choose.</h1>
+            <p class="lede">FoxAgent reads pages, fills interfaces and runs long tasks. Use a model on your own machine, or connect a cloud API key.</p>
+
+            <div class="welcome-step">
+              <span class="step-no">1</span>
+              <div class="grow">
+                <b>Choose a model</b>
+                <p class="small" id="welcomeModelState">No model yet. Local servers and cloud providers are both in Models.</p>
+                <button type="button" class="btn ghost" id="welcomeModels">Open Models</button>
+              </div>
+            </div>
+
+            <div class="welcome-step">
+              <span class="step-no">2</span>
+              <div>
+                <b>Open a page</b>
+                <p class="small">FoxAgent reads the active tab. Actions ask for your approval the first time.</p>
+              </div>
+            </div>
+
+            <div class="welcome-step">
+              <span class="step-no">3</span>
+              <div>
+                <b>Ask or start a task</b>
+                <p class="small">Questions about the page stay in chat. Longer jobs live in Tasks.</p>
+                <button type="button" class="btn ghost" id="welcomeTasks">Browse tasks</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="transcript" class="transcript"></div>
+
+          <div id="streaming" class="msg assistant streaming" hidden>
+            <div class="bubble"></div>
+          </div>
+
+          <div id="pending" class="pending"></div>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="pagebar">
+            <span class="chip page-chip" id="pageChip" title="Active tab"><i class="dot"></i><span>No page</span></span>
+            <label class="switch" title="Show what would happen without changing anything">
+              <input type="checkbox" id="dryRun">
+              <span>Dry run</span>
+            </label>
+          </div>
+          <form id="composer" class="composer" autocomplete="off">
+            <textarea id="input" rows="2" placeholder="Ask about this page, or run a task…" spellcheck="true"></textarea>
+            <div class="composer-row">
+              <span id="status" class="status-line"></span>
+              <div class="send-group">
+                <button type="button" id="stopBtn" class="btn ghost danger" hidden>Stop</button>
+                <button type="submit" id="sendBtn" class="btn primary">Send</button>
+              </div>
+            </div>
+          </form>
+          <div class="hint"><span>Enter to send</span><span>Shift+Enter for a new line</span></div>
+        </div>
+      </section>
+
+      <section id="panel-tasks" class="panel" role="tabpanel" hidden>
+        <div class="scroll">
+          <div class="section-head">
+            <div>
+              <h2>Tasks</h2>
+              <p>Prepared jobs. They use the same approvals and scratchpad as chat.</p>
+            </div>
+          </div>
+          <div id="recipeGroups" class="recipe-groups"></div>
+          <div class="footnote">
+            <b>Tip:</b> tasks work best when the matching site is already open and logged in.
+            FoxAgent never signs in for you.
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-activity" class="panel" role="tabpanel" hidden>
+        <div class="scroll">
+          <div class="section-head">
+            <div>
+              <h2>Activity</h2>
+              <p>Every tool call, on this machine only.</p>
+            </div>
+            <div class="head-actions">
+              <button class="btn ghost sm" id="exportLog">Export</button>
+              <button class="btn ghost sm danger" id="clearLog">Clear</button>
+            </div>
+          </div>
+
+          <div id="logList" class="log-list"></div>
+
+          <div class="section-head sub">
+            <div>
+              <h2>Scratchpad</h2>
+              <p>What the agent is holding onto between steps.</p>
+            </div>
+            <button class="btn ghost sm" id="clearNotes">Clear</button>
+          </div>
+          <pre id="notesView" class="notes">(empty)</pre>
+        </div>
+      </section>
+
+      <section id="panel-models" class="panel" role="tabpanel" hidden>
+        <div class="scroll">
+          <div class="section-head">
+            <div>
+              <h2>Models</h2>
+              <p>Choose where FoxAgent thinks. Local servers stay on this machine; cloud APIs receive your prompts and bill your key.</p>
+            </div>
+            <button type="button" class="btn ghost sm" id="modelsBack">Back</button>
+          </div>
+
+          <div class="model-current" id="modelCurrent"></div>
+
+          <div class="provider-section">
+            <div class="provider-section-title">Local servers</div>
+            <div class="provider-grid" id="localProviders"></div>
+          </div>
+
+          <div class="provider-section">
+            <div class="provider-section-title">Cloud APIs <span class="tag">key required</span></div>
+            <div class="provider-grid" id="cloudProviders"></div>
+          </div>
+
+          <div class="group model-config">
+            <div class="group-title" id="modelConfigTitle">Configure</div>
+
+            <label class="field">
+              <span>Base URL</span>
+              <input id="modelBaseUrl" class="input mono" type="url" spellcheck="false" placeholder="https://api.openai.com/v1">
+            </label>
+
+            <div class="field" id="keyField">
+              <span>API key <em id="keyState">not saved</em></span>
+              <div class="inline-field">
+                <input id="modelApiKey" class="input mono" type="password" spellcheck="false" autocomplete="off" placeholder="Paste a key">
+                <button type="button" class="btn ghost" id="saveKeyBtn">Save key</button>
+                <button type="button" class="btn ghost danger" id="forgetKeyBtn" hidden>Forget</button>
+              </div>
+              <p class="field-hint">
+                <span id="keyHint">Keys are stored in this Firefox profile and used only for requests to this provider.</span>
+                <a id="keyLink" class="field-link" target="_blank" rel="noopener noreferrer" hidden>Get a key ↗</a>
+              </p>
+            </div>
+
+            <div class="field">
+              <span>Model</span>
+              <div class="inline-field">
+                <input id="modelId" class="input mono" list="modelListOptions" spellcheck="false" placeholder="model id">
+                <button type="button" class="btn ghost" id="detectModelsBtn">Detect</button>
+              </div>
+              <datalist id="modelListOptions"></datalist>
+            </div>
+
+            <div id="modelDetectStatus" class="mini-status"></div>
+            <div id="modelChips" class="model-chips"></div>
+
+            <div class="row">
+              <button type="button" class="btn primary" id="useModelBtn">Use this model</button>
+              <span id="modelSaveState" class="mini-status"></span>
+            </div>
+
+            <p class="field-hint" id="modelProviderHint"></p>
+          </div>
+
+          <div class="cloud-notice" id="cloudNotice" hidden>
+            <div class="cloud-notice-head"><span class="tag warn">Cloud</span><b id="cloudName"></b></div>
+            <p>Prompts, page text and tool results are sent to this provider and billed to your API key. FoxAgent stores the key in this Firefox profile; it is never shown back in the sidebar.</p>
+          </div>
+
+          <div class="footnote">
+            Local servers keep page data on this machine. A cloud provider is a third party:
+            only connect one if you are comfortable sending it the pages you work with.
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-settings" class="panel" role="tabpanel" hidden>
+        <div class="scroll">
+          <div class="section-head">
+            <div>
+              <h2>Settings</h2>
+              <p>Stored in this Firefox profile. API keys live in Models.</p>
+            </div>
+            <div class="head-actions">
+              <button type="button" class="btn primary sm" id="saveTop">Save</button>
+              <button class="btn ghost sm" id="backToChat">Back</button>
+            </div>
+          </div>
+
+          <form id="settingsForm" class="settings">
+            <div class="group">
+              <div class="group-title">Model</div>
+              <div class="model-summary" id="settingsModelSummary"></div>
+              <div class="row">
+                <button type="button" class="btn ghost" id="settingsChangeModel">Change model</button>
+              </div>
+              <p class="field-hint">Provider, server URL, API key and model are managed in the Models panel.</p>
+            </div>
+
+            <div class="group">
+              <div class="group-title">Behavior</div>
+              <div class="two-col">
+                <label class="field">
+                  <span>Temperature</span>
+                  <input id="setTemp" class="input" type="number" min="0" max="2" step="0.05">
+                </label>
+                <label class="field">
+                  <span>Step limit</span>
+                  <input id="setSteps" class="input" type="number" min="1" max="80" step="1">
+                </label>
+              </div>
+              <label class="field">
+                <span>Tool calling</span>
+                <select id="setToolMode" class="input">
+                  <option value="auto">Auto — native calls, JSON fallback</option>
+                  <option value="native">Native tool calls only</option>
+                  <option value="json">JSON fallback only (small models)</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Context budget (characters)</span>
+                <input id="setContext" class="input" type="number" min="8000" max="400000" step="1000">
+              </label>
+              <label class="field">
+                <span>Page read limit (characters)</span>
+                <input id="setPageChars" class="input" type="number" min="2000" max="60000" step="1000">
+              </label>
+              <label class="checkline">
+                <input type="checkbox" id="setDryRun">
+                <span>Dry run by default — show actions without performing them</span>
+              </label>
+            </div>
+
+            <div class="group">
+              <div class="group-title">Approvals</div>
+              <div class="two-col three">
+                <label class="field">
+                  <span>Reading</span>
+                  <select id="setRead" class="input">
+                    <option value="auto">Always allow</option>
+                    <option value="confirm">Ask me</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Page actions</span>
+                  <select id="setAct" class="input">
+                    <option value="confirm">Ask me</option>
+                    <option value="auto">Always allow</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Downloads &amp; writes</span>
+                  <select id="setWrite" class="input">
+                    <option value="confirm">Ask me</option>
+                    <option value="auto">Always allow</option>
+                  </select>
+                </label>
+              </div>
+              <p class="field-hint">Passwords, payments and form submissions are never automated, regardless of this setting.</p>
+            </div>
+
+            <div class="group">
+              <div class="group-title">Site guardrails</div>
+              <label class="field">
+                <span>Only act on these sites <em>optional</em></span>
+                <textarea id="setAllowlist" class="input mono" rows="2" spellcheck="false" placeholder="canvas.instructure.com&#10;my-university.edu"></textarea>
+                <span class="field-hint">One host per line. Leave empty to allow any site, with per-action approval.</span>
+              </label>
+              <div class="field">
+                <span>Trusted sites <em>actions run without asking</em></span>
+                <div id="trustedList" class="trusted-list"></div>
+              </div>
+            </div>
+
+            <div class="row sticky-row">
+              <button type="submit" class="btn primary" id="saveSettings">Save settings</button>
+              <button type="button" class="btn ghost danger" id="resetChat">Reset conversation</button>
+            </div>
+          </form>
+
+          <div class="footnote">
+            FoxAgent has no servers of its own. Page data goes only to the provider you choose:
+            a local server keeps it on this machine, a cloud provider receives it and bills your key.
+            Firefox's <span class="mono">all-sites</span> permission is used to read the active tab;
+            site guardrails restrict which hosts can be acted on.
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script type="module" src="sidebar.js"></script>
+</body>
+</html>
