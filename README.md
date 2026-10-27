@@ -35,6 +35,7 @@
 | **Canvas recipes** | Weekly assignments, grades, course briefings, bulk material downloads -- all from your logged-in Canvas tab |
 | **Task library** | Page audit, document review, tab digest, and more -- run with one click |
 | **History and notes** | Conversation transcript, scratchpad, and exportable activity log |
+| **Light and night UI** | Monochrome white-on-black styling with a moon toggle for the near-black variant, remembered per profile |
 
 ---
 

@@ -5,6 +5,26 @@
 
 const $ = (id) => document.getElementById(id);
 
+/* Theme: monochrome light by default, near-black night mode. */
+const THEME_KEY = "foxagent.theme";
+
+function applyTheme(mode) {
+  const dark = mode === "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const btn = $("themeBtn");
+  if (!btn) return;
+  btn.textContent = dark ? "\u2600" : "\u263E";
+  btn.title = dark ? "Light mode" : "Night mode";
+  btn.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to night mode");
+  btn.setAttribute("aria-pressed", String(dark));
+}
+
+try {
+  applyTheme(localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light");
+} catch {
+  applyTheme("light");
+}
+
 const app = {
   settings: null,
   transcript: [],
@@ -1364,6 +1384,11 @@ function initEvents() {
   });
 
   $("settingsBtn").addEventListener("click", () => showPanel("settings"));
+  $("themeBtn").addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    try { localStorage.setItem(THEME_KEY, next); } catch { /* private mode */ }
+    applyTheme(next);
+  });
   $("modelBtn").addEventListener("click", () => {
     app.modelsProvider = app.settings?.provider || null;
     showPanel("models");
