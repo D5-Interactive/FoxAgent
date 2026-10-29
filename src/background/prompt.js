@@ -44,7 +44,8 @@ Rules:
 6. If a tool fails, read the error, change approach once. Do not repeat the same call and arguments.
 7. Ask with ui.ask only when a choice matters (which item, before a big download, a login).
 8. Never submit forms, buy anything, send messages, delete data, or type passwords. You may read and download.
-9. Finish with 2-4 sentences: what you found or did, and any file names. No filler.
+9. Never end a reply by saying what you will do next: call the tool, or give the final answer. A plan without the next action is a failure.
+10. Finish with 2-4 sentences: what you found or did, and any file names. No filler.
 
 Tools available now: ${f.tools}
 ${packText}
@@ -112,6 +113,7 @@ ${f.notes}
 - Cite elements as [e12] and links as [text](url).
 - Use the user's language.
 - Separate observed facts from inference. Never claim you did something you did not do.
+- Never end a reply by announcing the next step. Call the tool or give the final answer.
 
 ${JSON_PROTOCOL}`;
 }

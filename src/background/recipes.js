@@ -6,9 +6,8 @@ const RECIPES = [
     hint: "Due dates, upcoming events, overdue work, and grades at a glance.",
     prompt: [
       "Build my Canvas weekly digest for the active Canvas tab.",
-      "Use the Canvas API and page.fetchAll. Start with /api/v1/users/self/todo and /api/v1/users/self/upcoming_events, then /api/v1/courses?enrollment_state=active&per_page=100, then each course's upcoming assignments (bucket=upcoming) and grade enrollment (/api/v1/courses/{id}/enrollments?user_id=self&include[]=grades).",
-      "Grades live in enrollments[].grades.current_score / current_grade for each course, or computed_current_score in the course list when include[]=total_scores was requested; never read a top-level course.total_scores field.",
-      "Group everything by day with course, assignment, due time, points, and submitted state. Flag anything due in the next 48 hours and anything overdue. Add a compact grades table from the enrollments data.",
+      "Use canvas.digest for active courses, current scores and every upcoming assignment in one call, and canvas.todo for to-do items and upcoming events. Do not fetch per-course grade enrollments: canvas.digest already includes each course's computed score.",
+      "Group everything by day with course, assignment, due time, points, and submitted state. Flag anything due in the next 48 hours and anything overdue. Add a compact grades table from the COURSES block.",
       "Do not download or submit anything. If an API call fails, tell me and fall back to the UI only if it is quick."
     ].join("\n")
   },
@@ -19,7 +18,7 @@ const RECIPES = [
     hint: "Current score per course plus missing or ungraded work.",
     prompt: [
       "Check my grades in every active Canvas course.",
-      "For each course, fetch /api/v1/courses/{id}/enrollments?user_id=self&include[]=grades and report current_score, current_grade and the grading period if present. Also fetch upcoming and past assignments with the submission included to find missing or ungraded work that I can see.",
+      "Use canvas.courses for current scores and grades. Then use canvas.assignments with bucket=past for each course id to find missing work (has_submitted_submissions). Do not fetch enrollment endpoints per course.",
       "Present one table per course: item, due date, points possible, score, status. Then a short list of the highest-impact missing items. Never guess a grade and never submit anything."
     ].join("\n")
   },

@@ -95,7 +95,7 @@ Open the **Models** tab, or use the model button in the top bar.
 
 Packs add tools and guidance for one site or family of sites. They ship with the extension, so installing a pack enables it for your profile. Nothing is downloaded or evaluated at runtime.
 
-- **Canvas LMS** adds read-only course, assignment, score and module tools.
+- **Canvas LMS** adds a one-call course digest plus assignment, score, module and to-do tools.
 - **Gmail** and **Outlook** add careful mail playbooks: search, read, find attachments, draft and ask before sending.
 - **Google Drive** adds a browse and download playbook with no delete or share actions.
 
@@ -128,7 +128,7 @@ Firefox installs signed add-ons only, so FoxAgent cannot replace itself. Update 
 | Long tasks and reasoning | A larger local model, or a reasoning model | A reasoning model from your provider |
 | Fast, small machine | A 2B to 4B model with the compact profile | A small hosted model |
 
-Smaller models get the compact prompt, a shorter step limit, smaller page reads and snapshots, click by text, and pack shortcuts. If a model ignores native tool calls, set **Tool calling** to JSON fallback in Settings.
+Smaller models get the compact prompt, a shorter step limit, smaller page reads and snapshots, click by text, and pack shortcuts. If a model ignores native tool calls, set **Tool calling** to JSON fallback in Settings. If a long answer or a multi-step plan stops early, raise **Max reply tokens** (default 8,192). The context budget defaults to 96,000 characters; small models are held to 48,000.
 
 Vision models can receive a screenshot of the tab. Set **Vision** to auto, on or off in Settings. Auto recognizes common vision families in the model id.
 

@@ -6,6 +6,8 @@ Canvas password or token is stored.
 
 ## Tools
 
+- `canvas.digest` returns active courses, current scores and every upcoming
+  assignment in one call.
 - `canvas.todo` merges your to-do list with upcoming events.
 - `canvas.courses` lists active courses with ids and current scores.
 - `canvas.assignments` returns one course's assignments for a bucket:

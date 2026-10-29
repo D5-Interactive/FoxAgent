@@ -7,7 +7,7 @@ import { project } from "../src/background/rows.js";
 import { tools as canvasTools } from "../packs/canvas/tools.js";
 import { isNewer } from "../src/background/updates.js";
 import { supportsVision } from "../src/background/vision.js";
-import { toAnthropicMessages } from "../src/background/providers.js";
+import { toAnthropicMessages, streamChat } from "../src/background/providers.js";
 import fs from "node:fs";
 import { PACK_MODULES } from "../packs/registry.js";
 import { addNote, addTranscript, summarize } from "../src/background/sessions.js";
@@ -45,10 +45,48 @@ test("canvas tools live in the pack, not the core registry", () => {
     "canvas.todo",
     "canvas.courses",
     "canvas.assignments",
-    "canvas.modules"
+    "canvas.modules",
+    "canvas.digest"
   ]);
   assert.ok(canvasTools.every((t) => t.risk === "read"));
 });
+test("canvas.digest merges courses and upcoming assignments in one call", async () => {
+  const courses = [
+    { id: 1, name: "Biology", computed_current_score: 91, computed_current_grade: "A-" },
+    { id: 2, name: "History", computed_current_score: 84, computed_current_grade: "B" },
+  ];
+  const assignments = {
+    1: [
+      { id: 11, name: "Lab", due_at: "2026-11-02T10:00:00Z", points_possible: 10 },
+      { id: 12, name: "Essay", due_at: "2026-11-01T10:00:00Z", points_possible: 20 },
+    ],
+    2: [{ id: 21, name: "Reading", due_at: "2026-11-03T10:00:00Z", points_possible: 5 }],
+  };
+  globalThis.browser = {
+    tabs: {
+      get: async (id) => ({ id, url: "https://canvas.instructure.com/", title: "Canvas" }),
+      sendMessage: async (id, msg) => {
+        if (msg.op === "ping") return { ok: true };
+        const url = msg.args.url;
+        const json = url.includes("/assignments")
+          ? assignments[Number(url.match(/courses\/(\d+)/)[1])]
+          : courses;
+        return { ok: true, result: { url, status: 200, ok: true, contentType: "application/json", link: "", rate: {}, json, text: "", chars: 0 } };
+      },
+    },
+  };
+  try {
+    const digest = canvasTools.find((t) => t.name === "canvas.digest");
+    const out = await digest.run({}, { session: { tabId: 1 }, settings: {} });
+    assert.match(out, /Biology: 91/);
+    assert.match(out, /History: 84/);
+    assert.match(out, /UPCOMING \(3\)/);
+    assert.ok(out.indexOf("Essay") < out.indexOf("Lab"));
+  } finally {
+    delete globalThis.browser;
+  }
+});
+
 test("pack host patterns match subdomains and wildcards", () => {
   assert.equal(hostMatches("canvas.instructure.com", ["*.instructure.com"]), true);
   assert.equal(hostMatches("canvas.my-university.edu", ["canvas.*"]), true);
@@ -133,6 +171,46 @@ test("scratchpad and transcript stay bounded", () => {
   assert.equal(session.transcript.length, 240);
   assert.equal(summarize(session).messages, 240);
 });
+test("max reply tokens reach both provider payloads", async () => {
+  const calls = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url: String(url), body: JSON.parse(opts.body) });
+    const anthropic = String(url).includes("/messages");
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => anthropic
+        ? { content: [{ type: "text", text: "ok" }], stop_reason: "end_turn" }
+        : { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] },
+    };
+  };
+  try {
+    await streamChat({
+      provider: { key: "lmstudio", baseUrl: "http://127.0.0.1:1/v1", apiKey: "", model: "m" },
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      maxTokens: 1234,
+    });
+    await streamChat({
+      provider: { key: "anthropic", kind: "anthropic", baseUrl: "http://127.0.0.1:1/v1", apiKey: "k", model: "claude" },
+      model: "claude",
+      messages: [{ role: "user", content: "hi" }],
+      maxTokens: 1234,
+    });
+  } finally {
+    globalThis.fetch = real;
+  }
+  assert.equal(calls[0].body.max_tokens, 1234);
+  assert.equal(calls[1].body.max_tokens, 1234);
+});
+
+test("max reply tokens are clamped in settings replies", () => {
+  assert.equal(cleanSettingsPatch({ maxOutputTokens: 1 }).maxOutputTokens, 512);
+  assert.equal(cleanSettingsPatch({ maxOutputTokens: 999999 }).maxOutputTokens, 32768);
+});
+
 test("settings replies cannot write provider keys or unknown fields", () => {
   const patch = cleanSettingsPatch({
     temperature: 9,

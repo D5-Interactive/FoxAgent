@@ -131,7 +131,8 @@ function fitHistory(history, budget) {
 }
 function toProviderMessages(session, settings, tab, tools, small, packs, vision) {
   const system = buildSystemPrompt(session, settings, tab, { tools, small, packs });
-  const budget = Math.max(6e3, Number(settings.contextChars || 48e3) - system.length);
+  const configured = Number(settings.contextChars || 96e3);
+  const budget = Math.max(6e3, (small ? Math.min(configured, 48e3) : configured) - system.length);
   const fitted = fitHistory(session.history, budget);
   const messages = [{ role: "system", content: system }];
   if (fitted.trimmed) {
@@ -377,6 +378,7 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
   let steps = 0;
   let lastText = "";
   let lastSignature = "";
+  let continuations = 0;
   while (steps < stepCap) {
     if (signal.aborted) break;
     let tab = null;
@@ -413,6 +415,7 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
         messages: toProviderMessages(session, settings, tab, tools, small, prompts, vision),
         tools: useNative ? toolSchemas(tools) : void 0,
         temperature: settings.temperature,
+        maxTokens: Number(settings.maxOutputTokens) || 8192,
         signal,
         onDelta: (t) => emit({ type: "delta", text: t })
       });
@@ -450,8 +453,19 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
       emit({ type: "assistant_end", text: "" });
     }
     if (!calls.length) {
+      if (response.finishReason === "length" && continuations < 2 && !signal.aborted) {
+        continuations += 1;
+        notice(session, emit, "Output limit reached; asking the model to continue.", "warn");
+        session.history.push({
+          role: "user",
+          text: "Your previous reply was cut off by the output limit. Continue exactly where you stopped. Do not repeat completed work. If you were writing a tool call, send it again as one complete call.",
+          at: Date.now(),
+        });
+        steps += 1;
+        continue;
+      }
       if (response.finishReason === "length") {
-        notice(session, emit, "The model hit its output limit mid-answer. Ask it to continue, or raise the model's max tokens.", "warn");
+        notice(session, emit, "The model hit its output limit mid-answer. Raise Max reply tokens in Settings, then ask it to continue.", "warn");
       }
       if (!text) notice(session, emit, "The model returned an empty reply. Try again, or pick a different model.", "warn");
       break;

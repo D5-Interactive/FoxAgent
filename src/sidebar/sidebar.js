@@ -931,6 +931,7 @@ function fillSettings() {
   if (!s) return;
   $("setTemp").value = s.temperature;
   $("setSteps").value = s.maxSteps;
+  $("setMaxTokens").value = s.maxOutputTokens || 8192;
   $("setToolMode").value = s.toolMode;
   $("setVision").value = s.vision || "auto";
   $("setContext").value = s.contextChars;
@@ -1002,6 +1003,7 @@ function saveSettingsForm(event) {
   const patch = {
     temperature: Number($("setTemp").value) || 0,
     maxSteps: Math.max(1, Math.min(80, Number($("setSteps").value) || 32)),
+    maxOutputTokens: Math.max(512, Math.min(32768, Number($("setMaxTokens").value) || 8192)),
     toolMode: $("setToolMode").value,
     vision: $("setVision").value,
     contextChars: Math.max(8e3, Number($("setContext").value) || 48e3),

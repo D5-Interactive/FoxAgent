@@ -429,7 +429,7 @@ async function streamChat(opts) {
     const converted = toAnthropicMessages(opts.messages);
     const payload2 = {
       model,
-      max_tokens: Math.max(256, Math.min(32e3, Number(opts.maxTokens) || 4096)),
+      max_tokens: Math.max(256, Math.min(32e3, Number(opts.maxTokens) || 8192)),
       messages: converted.messages,
       temperature: Math.min(1, Math.max(0, Number.isFinite(opts.temperature) ? opts.temperature : 0.2)),
       stream: true
@@ -456,6 +456,11 @@ async function streamChat(opts) {
     temperature: Number.isFinite(opts.temperature) ? opts.temperature : 0.2,
     stream: true
   };
+  const cap = Number(opts.maxTokens) || 0;
+  if (cap) {
+    if (/^o[134]/i.test(model)) payload.max_completion_tokens = cap;
+    else payload.max_tokens = cap;
+  }
   if (opts.tools?.length) {
     payload.tools = opts.tools;
     payload.tool_choice = "auto";

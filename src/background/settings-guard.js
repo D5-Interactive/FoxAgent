@@ -3,6 +3,7 @@ const SETTINGS_KEYS = new Set([
   "provider",
   "temperature",
   "maxSteps",
+  "maxOutputTokens",
   "toolMode",
   "contextChars",
   "maxPageChars",
@@ -30,8 +31,11 @@ function cleanSettingsPatch(input) {
       case "maxSteps":
         out.maxSteps = Math.max(1, Math.min(80, Number(value) || 32));
         break;
+      case "maxOutputTokens":
+        out.maxOutputTokens = Math.max(512, Math.min(32768, Number(value) || 8192));
+        break;
       case "contextChars":
-        out.contextChars = Math.max(8e3, Math.min(4e5, Number(value) || 48e3));
+        out.contextChars = Math.max(8e3, Math.min(4e5, Number(value) || 96e3));
         break;
       case "maxPageChars":
         out.maxPageChars = Math.max(2e3, Math.min(6e4, Number(value) || 12e3));

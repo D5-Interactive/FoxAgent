@@ -129,11 +129,49 @@ ${result.text}`, maxChars + 400);
       return clip(`MODULES course ${courseId} (${compact.length})${result.note ? ` - ${result.note}` : ""}
 ${lines(compact)}`, maxChars + 400);
     }
+  },
+  {
+    name: "canvas.digest",
+    description: "Canvas: active courses with current scores plus every upcoming assignment across them, sorted by due date. Use this for a weekly brief instead of looping per course.",
+    risk: "read",
+    needsPage: true,
+    parameters: {
+      type: "object",
+      properties: {
+        maxCourses: { type: "integer", description: "1-30, default 15." },
+        tabId: { type: "integer" },
+        maxChars: { type: "integer", description: "Default 24000." }
+      }
+    },
+    async run(args, ctx) {
+      const tab = await canvasTab(args, ctx);
+      const maxChars = args.maxChars || 24e3;
+      const courseLimit = Math.min(30, Math.max(1, Number(args.maxCourses) || 15));
+      const courses = await fetchAllRows(
+        tab,
+        "/api/v1/courses?enrollment_state=active&per_page=100&include[]=total_scores",
+        { pick: ["id", "name", "computed_current_score", "computed_current_grade"], maxPages: 2, maxChars: 8e3 }
+      );
+      const list = courses.rows.slice(0, courseLimit);
+      const grades = list.map((c) => `${c.id} ${c.name}: ${c.computed_current_score ?? "?"}${c.computed_current_grade ? ` (${c.computed_current_grade})` : ""}`).join("\n");
+      const upcoming = [];
+      for (const course of list) {
+        const res = await fetchAllRows(
+          tab,
+          `/api/v1/courses/${course.id}/assignments?bucket=upcoming&per_page=100&order_by=due_at`,
+          { pick: ["id", "name", "due_at", "points_possible", "has_submitted_submissions"], maxPages: 2, maxChars: 6e3 }
+        );
+        for (const assignment of res.rows) upcoming.push({ course: course.name, ...assignment });
+      }
+      upcoming.sort((a, b) => String(a.due_at || "9999").localeCompare(String(b.due_at || "9999")));
+      const note = courses.note ? `\n${courses.note}` : "";
+      return clip(`COURSES (${list.length})${courses.rows.length > list.length ? `, first ${list.length}` : ""}${note}\n${grades}\n\nUPCOMING (${upcoming.length})\n${lines(upcoming)}`, maxChars);
+    }
   }
 ];
 const prompt = [
   "Canvas: use the canvas.* tools instead of writing API paths.",
-  "canvas.todo for what is due, canvas.courses for ids and scores, canvas.assignments for one course and bucket, canvas.modules before downloads.",
+  "canvas.digest for a weekly brief: courses, current scores and every upcoming assignment in one call. canvas.todo for to-do and events, canvas.courses for ids, canvas.assignments for one course and bucket, canvas.modules before downloads.",
   "Never guess a course id. On 401/403 or HTML instead of JSON, the institution blocks the API: fall back to snapshot/click and say so. On 429, stop and report it.",
   "Reading, summarizing and downloading are the job. Never submit assignments, post, message, change settings, or enroll/drop.",
   "Before a large download, use ui.ask with counts, total size, a sample of filenames and the destination pattern. Use browser.downloadMany in batches, keep a manifest with files.write, and skip duplicate URLs."

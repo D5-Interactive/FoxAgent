@@ -96,9 +96,10 @@ const DEFAULT_SETTINGS = {
   providers: defaultProviders(),
   temperature: 0.2,
   maxSteps: 32,
+  maxOutputTokens: 8192,
   toolMode: "auto",
   vision: "auto",
-  contextChars: 48e3,
+  contextChars: 96e3,
   maxPageChars: 12e3,
   approval: { read: "auto", act: "confirm", write: "confirm" },
   trustedSites: [],
@@ -134,6 +135,7 @@ function mergeSettings(base, patch) {
 async function load() {
   const stored = await browser.storage.local.get(["settings", "log"]);
   state.settings = mergeSettings(DEFAULT_SETTINGS, stored.settings || {});
+  if (Number(stored.settings?.contextChars) === 48e3) state.settings.contextChars = 96e3;
   state.log = Array.isArray(stored.log) ? stored.log.slice(-LOG_CAP) : [];
   await loadSessions();
   return state;

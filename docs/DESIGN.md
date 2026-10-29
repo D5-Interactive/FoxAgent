@@ -96,6 +96,8 @@ values (`tool_use` → `tool_calls`, `max_tokens` → `length`).
 6. Record the assistant message and any prose.
 7. Execute calls one at a time (at most six per turn), appending tool results.
    A repeated identical call gets a corrective note in its result.
+   If the provider stops on the output limit, the loop asks for a continuation
+   up to twice before ending the turn.
 8. Repeat until the model answers without calls, the step limit is reached, or
    the user stops.
 
@@ -135,8 +137,9 @@ switches to a compact prompt, a 24-step cap, 60-element snapshots and a 6,000
 character page-read cap. The tool menu drops `page.links` and `browser.switch`,
 and `page.clickText` lets the model click by visible label instead of tracking
 refs. Site work is expressed as pack tools such as `canvas.todo`,
-`canvas.courses`, `canvas.assignments` and `canvas.modules`, so endpoint paths
-and id shapes are code rather than prompt tokens.
+`canvas.courses`, `canvas.digest`, `canvas.assignments` and `canvas.modules`, so endpoint paths
+and id shapes are code rather than prompt tokens. `canvas.digest` loops over the
+active courses inside one tool call, which keeps a weekly brief to two calls.
 
 ### Packs
 
@@ -173,7 +176,8 @@ stays away until the next release.
 ### History compaction
 
 `fitHistory` groups history into user turns and keeps the newest turns that fit
-the character budget (`contextChars`, default 48,000). If a single turn is still
+the character budget (`contextChars`, default 96,000; capped at 48,000 for
+small models). If a single turn is still
 too large, tool output is clipped first, preserving the newest text. A system
 note tells the model that earlier context was removed. The scratchpad
 (`task.note`) is the durable memory that survives compaction and page loads, and
@@ -356,7 +360,8 @@ half-written code fences on every token.
 `store.js` owns defaults and global persistence:
 
 - `settings`: active provider and per-provider URL/key/model, temperature, step
-  limit, tool mode, vision mode, context and page budgets, approval policy,
+  limit, max reply tokens, tool mode, vision mode, context and page budgets,
+  approval policy,
   trusted sites, allowlist, dry run, installed packs, auto-update preference and
   dismissed update version.
 - `log`: audit entries.

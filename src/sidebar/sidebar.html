@@ -299,6 +299,11 @@
                 </label>
               </div>
               <label class="field">
+                <span>Max reply tokens</span>
+                <input id="setMaxTokens" class="input" type="number" min="512" max="32768" step="256">
+                <span class="field-hint">Raise this if a long answer or a multi-step plan stops early. Lower it if a local server rejects the request.</span>
+              </label>
+              <label class="field">
                 <span>Tool calling</span>
                 <select id="setToolMode" class="input">
                   <option value="auto">Auto — native calls, JSON fallback</option>

@@ -6,7 +6,8 @@ cookie travels with the request and FoxAgent never stores your Canvas password o
 token. The same recipes also work with an institutional Canvas host.
 
 The agent's first stop on a Canvas tab is the Canvas pack: install it once from
-the Packs tab, then the read-only shortcuts `canvas.todo` (to-do plus upcoming
+the Packs tab, then the read-only shortcuts `canvas.digest` (all active courses,
+scores and upcoming assignments in one call), `canvas.todo` (to-do plus upcoming
 events), `canvas.courses` (ids and scores), `canvas.assignments` (one course id,
 one bucket) and `canvas.modules` (module and item names) are in the menu. Those
 tools wrap the endpoints below, so small models do not have to remember paths.
@@ -78,17 +79,17 @@ points alone.
 
 The **Weekly assignment digest** recipe asks the agent to:
 
-1. Fetch `/users/self/todo` and `/users/self/upcoming_events`.
-2. Fetch active courses.
-3. For each course, fetch `bucket=upcoming` assignments (submission included)
-   and the grade enrollment.
-4. Merge by due date, grouping by day. Each row carries course, assignment, due
+1. Call `canvas.digest` for active courses, current scores and every upcoming
+   assignment in one call.
+2. Call `canvas.todo` for to-do items and upcoming events.
+3. Merge by due date, grouping by day. Each row carries course, assignment, due
    time, points, and submitted/missing state.
-5. Flag anything due within 48 hours or already overdue, then add a compact
+4. Flag anything due within 48 hours or already overdue, then add a compact
    grades table.
 
-A typical answer is a short “next 48 hours” section, a day-by-day list, and one
-table of courses with current score. Nothing is downloaded or changed.
+Two tool calls replace the per-course loop. A typical answer is a short “next 48
+hours” section, a day-by-day list, and one table of courses with current score.
+Nothing is downloaded or changed.
 
 If the todo endpoint returns entries without a course name, the agent has the
 course list from step 2 and maps `course_id` to the name.
