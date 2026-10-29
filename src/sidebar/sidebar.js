@@ -29,6 +29,7 @@ const app = {
   sessions: [],
   packs: [],
   packsRemote: null,
+  recipes: [],
   packDetail: null,
   update: null,
   panel: "chat",
@@ -824,6 +825,7 @@ function useCurrentModel() {
 }
 const TAG_GLYPH = { Canvas: "\u25A6", Page: "\xB6", Docs: "\u2261" };
 function renderRecipes(recipes) {
+  app.recipes = recipes;
   const holder = $("recipeGroups");
   holder.replaceChildren();
   const groups = new Map();
@@ -1036,7 +1038,7 @@ function showToast(text, level = "info") {
 }
 function showPanel(name) {
   app.panel = name;
-  for (const candidate of ["chat", "tasks", "packs", "activity", "models", "settings"]) {
+  for (const candidate of ["chat", "chats", "tasks", "packs", "activity", "models", "settings"]) {
     $(`panel-${candidate}`).hidden = candidate !== name;
   }
   document.querySelectorAll(".tab").forEach((tab) => {
@@ -1050,6 +1052,7 @@ function showPanel(name) {
   }
   if (name === "activity") renderLog();
   if (name === "packs") renderPacks();
+  if (name === "chats") renderChats();
   if (name === "tasks" && !app.settings) send({ type: "getState" });
 }
 function applyState(msg) {
@@ -1075,6 +1078,7 @@ function applyState(msg) {
   renderWelcome();
   renderSettingsSummary();
   renderRecipes(msg.recipes || []);
+  renderChats();
   renderLog();
   renderNotes();
   $("pending").replaceChildren();
@@ -1095,8 +1099,12 @@ function applyTab(msg) {
   const nextId = dto?.tabId ?? msg.tab?.id ?? null;
   const changed = app.tabId == null || nextId == null || String(app.tabId) !== String(nextId);
   app.tabId = nextId;
+  if (Array.isArray(msg.packs)) app.packs = msg.packs;
+  if (Array.isArray(msg.recipes)) renderRecipes(msg.recipes);
   renderTab();
   renderSessionStrip();
+  renderPacks();
+  renderChats();
   if (!changed) return;
   app.transcript = Array.isArray(dto?.transcript) ? dto.transcript : [];
   app.notes = Array.isArray(dto?.notes) ? dto.notes : [];
@@ -1132,7 +1140,10 @@ function renderSessionStrip() {
     const name = s.title || hostOf(s.url) || `Tab ${s.tabId}`;
     label.textContent = s.approvals ? `${name.slice(0, 26)} \xB7 needs you` : name.slice(0, 32);
     btn.append(dot, label);
-    btn.addEventListener("click", () => send({ type: "focusTab", tabId: s.tabId }));
+    btn.addEventListener("click", () => {
+      showPanel("chat");
+      send({ type: "focusTab", tabId: s.tabId });
+    });
     strip.append(btn);
   }
   renderRunningNote();
@@ -1168,6 +1179,11 @@ function packCard(pack, remoteOnly = false) {
     const tag = document.createElement("span");
     tag.className = "pack-version";
     tag.textContent = "new";
+    title.append(tag);
+  } else if (pack.active) {
+    const tag = document.createElement("span");
+    tag.className = "pack-version";
+    tag.textContent = "this tab";
     title.append(tag);
   }
   const desc = document.createElement("p");
@@ -1218,6 +1234,65 @@ function renderPacks() {
   for (const pack of packs) list.append(packCard(pack));
   for (const id of remoteNew) list.append(packCard({ id, name: id }, true));
 }
+function renderChats() {
+  const list = $("chatList");
+  if (!list) return;
+  const sessions = Array.isArray(app.sessions) ? app.sessions : [];
+  list.replaceChildren();
+  if (!sessions.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No conversations yet. Ask something in any tab.";
+    list.append(empty);
+    return;
+  }
+  for (const session of sessions) {
+    const row = document.createElement("div");
+    row.className = "chat-row";
+    row.dataset.current = String(session.tabId) === String(app.tabId) ? "true" : "false";
+    const main = document.createElement("div");
+    main.className = "chat-main";
+    const title = document.createElement("div");
+    title.className = "chat-title";
+    title.textContent = session.title || hostOf(session.url) || `Tab ${session.tabId}`;
+    const meta = document.createElement("div");
+    meta.className = "chat-meta";
+    const host = hostOf(session.url);
+    const state = session.approvals ? "needs you" : session.busy ? "working" : "idle";
+    meta.textContent = [host, `${session.messages || 0} messages`, state].filter(Boolean).join(" · ");
+    main.append(title, meta);
+    if (String(session.tabId) === String(app.tabId)) {
+      const badge = document.createElement("span");
+      badge.className = "chat-badge";
+      badge.textContent = "current";
+      title.append(" ", badge);
+    }
+    const actions = document.createElement("div");
+    actions.className = "chat-actions";
+    if (String(session.tabId) !== String(app.tabId) || app.panel !== "chat") {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "btn ghost sm";
+      open.textContent = "Open";
+      open.addEventListener("click", () => {
+        showPanel("chat");
+        send({ type: "focusTab", tabId: session.tabId });
+      });
+      actions.append(open);
+    }
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "btn ghost sm danger";
+    clear.textContent = "Clear";
+    clear.addEventListener("click", () => {
+      if (!confirm("Clear this tab's conversation?")) return;
+      send({ type: "reset", tabId: session.tabId });
+    });
+    actions.append(clear);
+    row.append(main, actions);
+    list.append(row);
+  }
+}
 function showPackDetail(detail) {
   app.packDetail = detail;
   $("packDetailName").textContent = detail.id || "";
@@ -1264,6 +1339,7 @@ function onMessage(msg) {
     case "sessions":
       app.sessions = Array.isArray(msg.sessions) ? msg.sessions : [];
       renderSessionStrip();
+      renderChats();
       break;
     case "packs":
       app.packs = Array.isArray(msg.packs) ? msg.packs : [];

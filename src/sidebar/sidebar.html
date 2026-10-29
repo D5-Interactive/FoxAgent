@@ -26,6 +26,7 @@
 
     <nav class="tabs" role="tablist" aria-label="FoxAgent sections">
       <button class="tab" role="tab" data-panel="chat" aria-selected="true">Chat</button>
+      <button class="tab" role="tab" data-panel="chats">Chats</button>
       <button class="tab" role="tab" data-panel="tasks">Tasks</button>
       <button class="tab" role="tab" data-panel="packs">Packs</button>
       <button class="tab" role="tab" data-panel="activity">Activity</button>
@@ -116,6 +117,23 @@
             </div>
           </form>
           <div class="hint"><span>Enter to send</span><span>Shift+Enter for a new line</span></div>
+        </div>
+      </section>
+
+      <section id="panel-chats" class="panel" role="tabpanel" hidden>
+        <div class="scroll">
+          <div class="section-head">
+            <div>
+              <h2>Chats</h2>
+              <p>One conversation per tab. Open a tab to continue, or clear a conversation.</p>
+            </div>
+            <button type="button" class="btn ghost sm" id="chatsRefresh">Refresh</button>
+          </div>
+          <div id="chatList" class="chat-list"></div>
+          <div class="footnote">
+            A chat belongs to its tab. Closing the tab closes the chat. Tasks and packs follow the tab you
+            are on, so a Canvas tool never appears on a Google Slides tab.
+          </div>
         </div>
       </section>
 

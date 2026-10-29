@@ -181,7 +181,6 @@ ${entry.text || "(no output)"}`
         { type: "image_url", image_url: { url: session.lastImage.dataUrl } }
       ]
     });
-    session.lastImage = null;
   } else if (session.lastImage && Date.now() - session.lastImage.at > 3e5) {
     session.lastImage = null;
   }
@@ -267,10 +266,11 @@ function notice(session, emit, text, level = "info") {
   const item = addTranscript(session, { type: "notice", text, level });
   emit({ type: "item", item });
 }
-async function executeCall(call, ctx) {
+export async function executeCall(call, ctx) {
   const { session, settings, signal, emit, approve, ask } = ctx;
   const started = performance.now();
-  const spec = findTool(call.name);
+  const available = Array.isArray(ctx.tools) && ctx.tools.length ? ctx.tools : TOOLS;
+  const spec = available.find((tool) => tool.name === call.name) || findTool(call.name);
   const args = call.args && typeof call.args === "object" ? call.args : {};
   const risk = callRisk(spec, args);
   const emitStart = () => emit({
@@ -280,7 +280,7 @@ async function executeCall(call, ctx) {
   if (!spec) {
     emitStart();
     const hint = suggestTools(call.name).join(", ");
-    const text = `Unknown tool "${call.name}". Use one of: ${TOOLS.map((t) => t.name).join(", ")}. Closest: ${hint}.`;
+    const text = `Unknown tool "${call.name}". Use one of: ${available.map((t) => t.name).join(", ")}. Closest: ${hint}.`;
     const ms = Math.round(performance.now() - started);
     emit({ type: "tool_end", id: call.id, name: call.name, ok: false, text, ms });
     addLog({ tool: call.name, args, ok: false, ms, risk: "read", host: "" });
@@ -386,18 +386,13 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
       tab = await resolveTab(void 0, session.tabId);
     } catch {
     }
-    let openHosts = [];
-    try {
-      const tabs = await browser.tabs.query({});
-      openHosts = tabs.map((t) => hostOf(t.url));
-    } catch {
-    }
+    const pinnedHost = hostOf(tab?.url);
     let extraTools = [];
     let prompts = [];
     try {
       const enabledPacks = Array.isArray(settings.packs) ? settings.packs : [];
-      extraTools = await packTools(enabledPacks, openHosts);
-      prompts = await packPrompts(enabledPacks, hostOf(tab?.url));
+      extraTools = await packTools(enabledPacks, [pinnedHost]);
+      prompts = await packPrompts(enabledPacks, pinnedHost);
     } catch (err) {
       console.warn("FoxAgent: packs unavailable this step", err);
     }
@@ -407,6 +402,7 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
     session.tabId = tab?.id ?? session.tabId;
     emit({ type: "phase", phase: "thinking", step: steps + 1, maxSteps: stepCap });
     emit({ type: "assistant_start" });
+    const sendingImage = Boolean(vision && session.lastImage?.dataUrl);
     let response;
     try {
       response = await streamChat({
@@ -419,6 +415,7 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
         signal,
         onDelta: (t) => emit({ type: "delta", text: t })
       });
+      if (sendingImage) session.lastImage = null;
     } catch (err) {
       if (err?.aborted) {
         notice(session, emit, "Stopped.", "warn");
@@ -483,7 +480,7 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
       } else {
         const signature = call.name + JSON.stringify(call.args || {});
         const repeated = signature === lastSignature;
-        result = await executeCall(call, { session, settings, emit, approve, ask, signal, small });
+        result = await executeCall(call, { session, settings, emit, approve, ask, signal, small, tools });
         if (repeated && !result.aborted) {
           result.text = `NOTE: this is the same call with the same arguments as the previous step. Change approach or answer with what you have.
 ${result.text}`;
@@ -509,7 +506,7 @@ ${result.text}`;
         ok: result.ok,
         ms: result.ms,
         dryRun: Boolean(result.dryRun),
-        risk: callRisk(findTool(result.name), call.args)
+        risk: callRisk(tools.find((tool) => tool.name === result.name) || findTool(result.name), call.args)
       });
       emit({ type: "item", item });
     }

@@ -458,7 +458,7 @@ async function streamChat(opts) {
   };
   const cap = Number(opts.maxTokens) || 0;
   if (cap) {
-    if (/^o[134]/i.test(model)) payload.max_completion_tokens = cap;
+    if (/(^|\/)o[134]/i.test(model)) payload.max_completion_tokens = cap;
     else payload.max_tokens = cap;
   }
   if (opts.tools?.length) {

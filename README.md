@@ -37,7 +37,7 @@
 | **Packs** | Site-specific tools and playbooks, installed per profile |
 | **Task library** | Page audit, document review, tab digest, and more from one click |
 | **History and notes** | Conversation transcript, scratchpad, and an exportable activity log |
-| **One task per tab** | Each tab keeps its transcript, scratchpad and running task; a strip shows the rest |
+| **One task per tab** | Each tab keeps its transcript, scratchpad, running task, pack tools and recipes; a strip and a Chats list show the rest |
 | **Small-model tuned** | Compact prompts, smaller snapshots, click by text, multi-field fill, waiting, and pack shortcuts |
 | **Precise page control** | CSS, text and role queries; shadow DOM and same-origin iframe traversal; form fill and key presses |
 | **Vision** | Screenshot a tab and send the image to a vision model, then clear it so later steps are not charged for it |
@@ -85,6 +85,7 @@ Open the **Models** tab, or use the model button in the top bar.
 
 - **Chat**: ask about the current page, run a task, and approve actions as they come.
 - **Tabs**: each tab keeps its own conversation and task. A strip under the tabs shows work still running elsewhere.
+- **Chats**: one list of every tab conversation, with Open and Clear actions.
 - **Packs**: install the site tools you need, such as a site API or a careful UI playbook.
 - **Tasks**: one-click recipes for audits, digests and downloads.
 - **Activity**: the audit log of every tool call, approval and result.
@@ -99,7 +100,7 @@ Packs add tools and guidance for one site or family of sites. They ship with the
 - **Gmail** and **Outlook** add careful mail playbooks: search, read, find attachments, draft and ask before sending.
 - **Google Drive** adds a browse and download playbook with no delete or share actions.
 
-The Packs tab lists what is in the build, with an icon, version, description and a Details view. **Check for new** compares the list with the `packs/` directory in this repository and marks packs that a newer release adds.
+The Packs tab lists what is in the build, with an icon, version, description, a Details view and a marker when a pack matches the current tab. Tools, prompts and recipes only follow the tab you are on. **Check for new** compares the list with the `packs/` directory in this repository and marks packs that a newer release adds.
 
 ### Write a pack
 
@@ -166,6 +167,7 @@ FoxAgent/
 │   └── _template/
 ├── tests/
 │   ├── logic.test.mjs         # node --test checks for pure logic
+│   ├── background.test.mjs    # pack gating and per-tab context
 │   ├── page_bridge.py         # real DOM checks with Playwright
 │   └── fixtures/page.html
 ├── src/
@@ -187,7 +189,7 @@ FoxAgent/
 │   ├── content/
 │   │   └── agent.js           # Page bridge: snapshot, read, click, fetch
 │   └── sidebar/
-│       ├── sidebar.html       # Chat, Tasks, Packs, Activity, Models
+│       ├── sidebar.html       # Chat, Chats, Tasks, Packs, Activity, Models
 │       ├── sidebar.js         # UI logic, no innerHTML
 │       └── sidebar.css        # Responsive, themed
 └── docs/
@@ -213,11 +215,12 @@ for f in src/background/*.js src/sidebar/*.js src/content/*.js packs/*.js packs/
   node --check "$f"
 done
 
-# Logic tests
-node --test tests/logic.test.mjs
+# Logic and pack tests
+node --test tests/*.test.mjs
 
-# Page bridge tests (Playwright)
+# Page bridge and sidebar tests (Playwright)
 uv run --with playwright python tests/page_bridge.py
+uv run --with playwright python tests/sidebar_smoke.py
 
 # Build
 npx web-ext@8 build --overwrite-dest --ignore-files "tests/**" --ignore-files ".github/**" --ignore-files ".opencode/**"

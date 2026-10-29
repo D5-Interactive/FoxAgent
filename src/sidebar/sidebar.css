@@ -1335,3 +1335,35 @@ textarea.input { resize: vertical; }
   .composer-wrap { padding: 10px 12px 12px; }
   .hint { display: none; }
 }
+
+.chat-list { display: flex; flex-direction: column; gap: 8px; }
+
+.chat-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  padding: 11px 12px;
+}
+.chat-row[data-current="true"] { border-color: var(--line-2); }
+.chat-main { flex: 1; min-width: 0; }
+.chat-title {
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-meta { margin-top: 2px; font-size: 10.5px; color: var(--muted); overflow-wrap: anywhere; }
+.chat-actions { display: flex; gap: 6px; flex: none; }
+.chat-badge {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 5px;
+}

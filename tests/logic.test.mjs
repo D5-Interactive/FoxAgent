@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { modelSize, isSmallModel, parseTextCalls } from "../src/background/agent.js";
+import { modelSize, isSmallModel, parseTextCalls, executeCall } from "../src/background/agent.js";
 import { toolsFor, suggestTools, TOOLS } from "../src/background/tools.js";
 import { hostMatches } from "../packs/sdk.js";
 import { project } from "../src/background/rows.js";
@@ -161,6 +161,7 @@ test("web.fetch refuses non-http and local addresses before any request", async 
   await assert.rejects(() => tool.run({ url: "ftp://example.com/x" }), /must start with/);
   await assert.rejects(() => tool.run({ url: "http://localhost/x" }), /refuses local/);
   await assert.rejects(() => tool.run({ url: "http://169.254.169.254/latest" }), /refuses local/);
+  await assert.rejects(() => tool.run({ url: "http://[fd00::1]/" }), /refuses local/);
 });
 
 test("scratchpad and transcript stay bounded", () => {
@@ -171,6 +172,35 @@ test("scratchpad and transcript stay bounded", () => {
   assert.equal(session.transcript.length, 240);
   assert.equal(summarize(session).messages, 240);
 });
+test("tools from the step menu execute, including pack tools", async () => {
+  const calls = [];
+  const packTool = {
+    name: "pack.ping",
+    risk: "read",
+    needsPage: false,
+    async run() {
+      calls.push("pack");
+      return "pong";
+    },
+  };
+  const result = await executeCall(
+    { id: "c1", name: "pack.ping", args: {} },
+    {
+      session: { tabId: 1, notes: [], pending: new Map(), history: [], transcript: [] },
+      settings: { approval: { read: "auto", act: "confirm", write: "confirm" }, trustedSites: [], siteAllowlist: [], dryRun: false },
+      emit() {},
+      approve: async () => true,
+      ask: async () => "",
+      signal: { aborted: false },
+      tools: [packTool],
+      small: false,
+    },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.text, "pong");
+  assert.deepEqual(calls, ["pack"]);
+});
+
 test("max reply tokens reach both provider payloads", async () => {
   const calls = [];
   const real = globalThis.fetch;
@@ -199,11 +229,19 @@ test("max reply tokens reach both provider payloads", async () => {
       messages: [{ role: "user", content: "hi" }],
       maxTokens: 1234,
     });
+    await streamChat({
+      provider: { key: "openrouter", baseUrl: "http://127.0.0.1:1/v1", apiKey: "k", cloud: true, model: "openai/o3-mini" },
+      model: "openai/o3-mini",
+      messages: [{ role: "user", content: "hi" }],
+      maxTokens: 1234,
+    });
   } finally {
     globalThis.fetch = real;
   }
   assert.equal(calls[0].body.max_tokens, 1234);
   assert.equal(calls[1].body.max_tokens, 1234);
+  assert.equal(calls[2].body.max_completion_tokens, 1234);
+  assert.equal(calls[2].body.max_tokens, undefined);
 });
 
 test("max reply tokens are clamped in settings replies", () => {

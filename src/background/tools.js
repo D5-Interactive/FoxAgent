@@ -63,9 +63,10 @@ async function pageChange(after, beforeUrl, tabId) {
 }
 const PRIVATE_HOST = /^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$)/i;
 const META_HOST = /(^|\.)(metadata\.google\.internal|instance-data)$/i;
+const IP_LITERAL = /^\[/;
 function requirePublicUrl(url) {
   const u = requireHttp(url);
-  if (PRIVATE_HOST.test(u.hostname) || META_HOST.test(u.hostname)) {
+  if (PRIVATE_HOST.test(u.hostname) || META_HOST.test(u.hostname) || IP_LITERAL.test(u.hostname)) {
     throw new Error("web.fetch refuses local and link-local addresses. Read local pages in a tab instead (page.read), where the user's session is already trusted.");
   }
   return u;
@@ -183,7 +184,7 @@ ${res.elements.join("\n")}` : "No interactive elements found. The page may still
   },
   {
     name: "page.clickText",
-    description: 'Click the first visible button or link whose text matches, without a snapshot or ref. This is the most reliable way for small models to click "Sign in", "Next", "Submit" or a menu item.',
+    description: 'Click the first visible button or link whose text matches, without a snapshot or ref. This is the most reliable way for small models to click "Sign in", "Next", "Submit" or a menu item. If several elements match, pass nth (0-based) or use page.query refs.',
     risk: "act",
     needsPage: true,
     parameters: {

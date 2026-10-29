@@ -61,13 +61,17 @@ jobs:
 
           echo "release=true" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout version commit
+        if: steps.version.outputs.release == 'true'
+        run: git checkout "${{ steps.version.outputs.bump_sha }}"
+
       - name: Checks
         if: steps.version.outputs.release == 'true'
         run: |
           for f in src/background/*.js src/sidebar/*.js src/content/*.js packs/*.js packs/*/*.js; do
             node --check "$f"
           done
-          node --test tests/logic.test.mjs
+          node --test tests/*.test.mjs
           npx --yes web-ext@8 lint --ignore-files "tests/**" --ignore-files ".github/**" --ignore-files ".opencode/**"
 
       - name: Build

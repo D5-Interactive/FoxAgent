@@ -71,7 +71,19 @@
   ].join(",");
   const refs = new Map();
   let refSeq = 0;
-  const hiddenCache = new WeakMap();
+  let hiddenCache = new WeakMap();
+  const resetHidden = () => {
+    hiddenCache = new WeakMap();
+  };
+  const resetRefs = () => {
+    for (const el of refs.values()) {
+      try {
+        delete el.__foxRef;
+      } catch {
+      }
+    }
+    refs.clear();
+  };
   const text = (v) => v == null ? "" : String(v);
   const clean = (v) => text(v).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
   const clamp = (v, lo, hi, dflt) => {
@@ -184,6 +196,8 @@
     return clean(out);
   }
   function snapshot(opts = {}) {
+    resetRefs();
+    resetHidden();
     const limit = clamp(opts.maxElements, 20, 400, 200);
     const outline = [];
     const all = roots();
@@ -475,6 +489,7 @@
     }).join("\n");
   }
   function read(opts = {}) {
+    resetHidden();
     let target;
     if (opts.selector) {
       target = document.querySelector(opts.selector);
@@ -496,6 +511,7 @@
     };
   }
   function links(opts = {}) {
+    resetHidden();
     const filter = opts.filter ? new RegExp(opts.filter, "i") : null;
     const out = [];
     const seen = new Set();
@@ -544,6 +560,7 @@
     return { ref: opts.ref, label: name };
   }
   function clickText(opts) {
+    resetHidden();
     const wanted = clean(opts.text).toLowerCase();
     if (!wanted) throw new Error("page.clickText needs the visible text to click.");
     const exact = Boolean(opts.exact);
@@ -568,6 +585,12 @@
       throw new Error(`No visible button or link matches ${JSON.stringify(opts.text)}. Use page.snapshot or page.query to see the labels.`);
     }
     matches.sort((a, b) => a.rank - b.rank || a.offscreen - b.offscreen);
+    if (opts.nth == null) {
+      const best = matches.filter((m) => m.rank === matches[0].rank);
+      if (best.length > 1) {
+        throw new Error(`${best.length} elements match ${JSON.stringify(opts.text)}: ${best.slice(0, 5).map((m) => m.label.slice(0, 40)).join("; ")}. Pass nth=0..${best.length - 1}, or use page.snapshot refs.`);
+      }
+    }
     const nth = Math.max(0, Number(opts.nth) || 0);
     const pick = matches[nth];
     if (!pick) throw new Error(`Only ${matches.length} element(s) match ${JSON.stringify(opts.text)}; nth=${nth} is out of range.`);
@@ -617,6 +640,7 @@
     return { ref, label: labelOf(el).slice(0, 120), tag: el.tagName.toLowerCase(), x, y };
   }
   function query(opts = {}) {
+    resetHidden();
     const selector = text(opts.selector).trim();
     const wanted = clean(opts.text).toLowerCase();
     const role = clean(opts.role).toLowerCase();
@@ -672,6 +696,7 @@
     throw new Error(`No visible field matches ${JSON.stringify(spec.label || spec.placeholder || spec.name)}.`);
   }
   function fill(opts = {}) {
+    resetHidden();
     const fields = Array.isArray(opts.fields) ? opts.fields.slice(0, 20) : [];
     if (!fields.length) throw new Error("page.fill needs a fields array.");
     const results = [];
@@ -691,7 +716,7 @@
       }
     }
     let submitted = false;
-    if (opts.submit && last) {
+    if (opts.submit && last && results.every((r) => r.ok)) {
       const form = last.form || last.closest?.("form");
       if (form && typeof form.requestSubmit === "function") {
         form.requestSubmit();
@@ -727,16 +752,19 @@
     return { key, submitted, target: el ? labelOf(el).slice(0, 80) : "(none)" };
   }
   async function waitFor(opts = {}) {
+    resetHidden();
     const timeout = clamp(opts.timeoutMs, 200, 3e4, 6e3);
     const selector = text(opts.selector).trim();
     const wanted = clean(opts.text).toLowerCase();
     const gone = Boolean(opts.gone);
     const started = Date.now();
     const present = () => {
+      resetHidden();
       if (selector) {
         for (const root2 of roots()) {
           try {
-            if (root2.querySelector(selector)) return true;
+            const found = root2.querySelector(selector);
+            if (found && !hidden(found)) return true;
           } catch {
             throw new Error(`Bad CSS selector: ${selector}`);
           }

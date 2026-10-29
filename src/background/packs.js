@@ -40,12 +40,13 @@ function loadCatalog() {
   });
   return catalogPromise;
 }
-async function packList(enabledIds = []) {
+async function packList(enabledIds = [], host = "") {
   const enabled = new Set(enabledIds);
   const packs = await loadCatalog();
   return packs.map((pack) => ({
     ...pack,
-    enabled: enabled.has(pack.id)
+    enabled: enabled.has(pack.id),
+    active: enabled.has(pack.id) && matchesAny([host], pack.hosts)
   }));
 }
 function moduleFor(pack) {
@@ -84,6 +85,10 @@ async function packPrompts(enabledIds, host) {
   const mods = await activeModules(enabledIds, [host]);
   return mods.filter(({ mod }) => typeof mod.prompt === "string" && mod.prompt.trim()).map(({ pack, mod }) => ({ id: pack.id, name: pack.name, prompt: mod.prompt.trim() }));
 }
+async function packRecipes(enabledIds, host) {
+  const mods = await activeModules(enabledIds, [host]);
+  return mods.flatMap(({ mod }) => Array.isArray(mod.recipes) ? mod.recipes : []);
+}
 async function packDescription(id) {
   const packs = await loadCatalog();
   const pack = packs.find((p) => p.id === id);
@@ -116,5 +121,6 @@ export {
   packDescription,
   packList,
   packPrompts,
+  packRecipes,
   packTools
 };

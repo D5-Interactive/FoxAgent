@@ -169,6 +169,54 @@ ${lines(compact)}`, maxChars + 400);
     }
   }
 ];
+const recipes = [
+  {
+    id: "canvas.weekly",
+    tag: "Canvas",
+    title: "Weekly assignment digest",
+    hint: "Due dates, upcoming events, overdue work, and grades at a glance.",
+    prompt: [
+      "Build my Canvas weekly digest for the active Canvas tab.",
+      "Use canvas.digest for active courses, current scores and every upcoming assignment in one call, and canvas.todo for to-do items and upcoming events. Do not fetch per-course grade enrollments: canvas.digest already includes each course's computed score.",
+      "Group everything by day with course, assignment, due time, points, and submitted state. Flag anything due in the next 48 hours and anything overdue. Add a compact grades table from the COURSES block.",
+      "Do not download or submit anything. If an API call fails, tell me and fall back to the UI only if it is quick."
+    ].join("\n")
+  },
+  {
+    id: "canvas.grades",
+    tag: "Canvas",
+    title: "Check grades in every class",
+    hint: "Current score per course plus missing or ungraded work.",
+    prompt: [
+      "Check my grades in every active Canvas course.",
+      "Use canvas.courses for current scores and grades. Then use canvas.assignments with bucket=past for each course id to find missing work (has_submitted_submissions). Do not fetch enrollment endpoints per course.",
+      "Present one table per course: item, due date, points possible, score, status. Then a short list of the highest-impact missing items. Never guess a grade and never submit anything."
+    ].join("\n")
+  },
+  {
+    id: "canvas.materials",
+    tag: "Canvas",
+    title: "Download all course materials",
+    hint: "Every file in every module, sorted into course folders with a manifest.",
+    prompt: [
+      "Download all materials from every module in every active Canvas course.",
+      "First inventory without downloading: list active courses, then each course's modules with items, then the files (/api/v1/courses/{id}/files?per_page=100, plus module File items by content_id through /api/v1/files/{id}). Skip duplicate URLs and empty files.",
+      "Then use ui.ask to show me: number of courses, number of files, total size, a sample of up to ten filenames, and the destination pattern (FoxAgent/Canvas/{Course}/Module {n} - {Name}/{filename}). Also ask whether to include Page bodies as Markdown and ExternalUrl links in a text index. Wait for my answer.",
+      "Download in batches with browser.downloadMany (at most 200 per call), keep a manifest of course, module, filename, size and status, and save it with files.write as FoxAgent/Canvas/manifest-YYYY-MM-DD.json. Replace slashes in course, module and file names with '-' so they stay single folder names. Report queued and failed counts. Do not download the same file twice and do not click through the UI unless the API is blocked."
+    ].join("\n")
+  },
+  {
+    id: "canvas.course",
+    tag: "Canvas",
+    title: "Brief me on a course",
+    hint: "What this course expects, what is due, and what is missing.",
+    prompt: [
+      "Give me a briefing on one Canvas course. If there is more than one active course, use ui.ask to ask which one.",
+      "Read the syllabus page, modules and upcoming assignments. Report: the grading breakdown if published, the next three due items with dates, recent announcements, required materials, and anything that looks like a missing prerequisite or unread module.",
+      "Keep it under 300 words and do not change anything in Canvas."
+    ].join("\n")
+  }
+];
 const prompt = [
   "Canvas: use the canvas.* tools instead of writing API paths.",
   "canvas.digest for a weekly brief: courses, current scores and every upcoming assignment in one call. canvas.todo for to-do and events, canvas.courses for ids, canvas.assignments for one course and bucket, canvas.modules before downloads.",
@@ -178,5 +226,6 @@ const prompt = [
 ].join(" ");
 export {
   prompt,
+  recipes,
   tools
 };

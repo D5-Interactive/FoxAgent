@@ -10,9 +10,9 @@ import {
 import { runAgent } from "./agent.js";
 import { listModels } from "./providers.js";
 import { RECIPES } from "./recipes.js";
-import { activeTab, tabInfo } from "./page.js";
+import { activeTab, tabInfo, hostOf } from "./page.js";
 import { cleanSettingsPatch } from "./settings-guard.js";
-import { packList, packDescription, checkRemotePacks, loadCatalog } from "./packs.js";
+import { packList, packDescription, checkRemotePacks, loadCatalog, packRecipes } from "./packs.js";
 import { checkUpdate, cachedUpdate, downloadUpdate } from "./updates.js";
 import {
   sessions,
@@ -85,7 +85,11 @@ function visibleUpdate(update) {
   if (update.latest && update.latest === state.settings.dismissedUpdate) return null;
   return update;
 }
+async function recipesFor(host, enabled = state.settings.packs) {
+  return [...RECIPES, ...await packRecipes(enabled || [], host)];
+}
 async function stateMessage(tab, session) {
+  const host = hostOf(tab?.url);
   return {
     type: "state",
     settings: publicSettings(),
@@ -96,14 +100,14 @@ async function stateMessage(tab, session) {
     busy: Boolean(session?.busy),
     pending: session ? [...session.pending.values()].map((entry) => entry.request) : [],
     sessions: allSummaries(),
-    packs: await packList(state.settings.packs || []),
+    packs: await packList(state.settings.packs || [], host),
     update: visibleUpdate(await cachedUpdate()),
     log: state.log,
     models: state.models,
     modelsByProvider: Object.fromEntries(modelCache),
     selectedModel: activeModel(),
     provider: state.settings.provider,
-    recipes: RECIPES
+    recipes: await recipesFor(host)
   };
 }
 function rememberModels(providerKey, models) {
@@ -141,11 +145,14 @@ async function pushTab(port, meta) {
   } catch {
   }
   const session = tab ? getSession(tab) : null;
+  const host = hostOf(tab?.url);
   send(port, {
     type: "tab",
     tab: tab ? tabInfo(tab) : null,
     session: session ? toDto(session) : null,
-    sessions: allSummaries()
+    sessions: allSummaries(),
+    packs: await packList(state.settings.packs || [], host),
+    recipes: await recipesFor(host)
   });
 }
 const tabTimers = new Map();
@@ -281,16 +288,19 @@ async function startRun(session, text, origin = "chat") {
     toast(`Two tabs are already working. Let one finish, or stop one in the tab strip.`, "warn");
     return;
   }
+  session.busy = true;
+  session.status = "working";
+  session.controller = new AbortController();
   let tab;
   try {
     tab = await browser.tabs.get(session.tabId);
   } catch {
+    session.busy = false;
+    session.status = "idle";
+    session.controller = null;
     toast("That tab was closed. Open the page again.", "error");
     return;
   }
-  session.busy = true;
-  session.status = "working";
-  session.controller = new AbortController();
   session.title = tab.title || session.title;
   session.url = tab.url || session.url;
   session.windowId = tab.windowId;
@@ -370,13 +380,13 @@ async function handleMessage(msg, port, meta) {
       return;
     }
     case "runRecipe": {
-      const recipe = RECIPES.find((r) => r.id === msg.id);
-      if (!recipe) {
-        send(port, { type: "toast", text: "Unknown task.", level: "error" });
-        return;
-      }
       const tab = await tabForMessage(msg, meta);
       const session = getSession(tab);
+      const recipe = (await recipesFor(hostOf(tab.url))).find((r) => r.id === msg.id);
+      if (!recipe) {
+        send(port, { type: "toast", text: "That task is not available on this tab.", level: "warn" });
+        return;
+      }
       if (!activeModel()) {
         send(port, { type: "needModel" });
         return;
@@ -597,7 +607,7 @@ Extra context from me: ${extra}` : ""), recipe.id);
       else enabled.delete(id);
       await saveSettings({ packs: [...enabled] });
       broadcastAll({ type: "settings", settings: publicSettings() });
-      broadcastAll({ type: "packs", packs: await packList([...enabled]) });
+      for (const [openPort, openMeta] of ports) await pushTab(openPort, openMeta);
       send(port, {
         type: "toast",
         text: msg.enabled ? `Installed ${id}.` : `Removed ${id}.`,

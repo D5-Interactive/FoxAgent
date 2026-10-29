@@ -61,6 +61,14 @@ def main():
         check("snapshot sees an iframe field", "Frame field" in joined)
         check("snapshot marks offscreen controls", "offscreen" in joined or len(snap["elements"]) < 12)
 
+        first_ref = next(line.split(" ")[0] for line in snap["elements"] if '"Start task"' in line)
+        result("snapshot", {"maxElements": 80})
+        stale = call("click", {"ref": first_ref})
+        check("an old ref is stale after a new snapshot", not stale.get("ok") and "stale" in stale.get("error", ""))
+
+        ambiguous = call("clickText", {"text": "Remove"})
+        check("ambiguous labels need nth", not ambiguous.get("ok") and "elements match" in ambiguous.get("error", ""))
+
         clicked = result("clickText", {"text": "Start task"})
         check("clickText clicks by label", clicked["label"] == "Start task")
         page.wait_for_timeout(100)
@@ -96,6 +104,15 @@ def main():
         result("clickText", {"text": "Remove", "nth": 1})
         check("clickText honors nth", page.evaluate("document.body.dataset.remove") == "1")
 
+        partial = result("fill", {
+            "fields": [
+                {"label": "Email", "value": "first@example.com"},
+                {"label": "Missing label", "value": "nope"},
+            ],
+            "submit": True,
+        })
+        check("partial fill does not submit", partial["submitted"] is False and page.inner_text("#submitted") == "")
+
         filled = result("fill", {
             "fields": [
                 {"label": "Email", "value": "ada@example.com"},
@@ -124,6 +141,9 @@ def main():
 
         waited = result("waitFor", {"text": "Loaded content", "timeoutMs": 4000})
         check("waitFor waits for late text", waited["state"] == "present")
+
+        hidden_wait = call("waitFor", {"selector": "#hidden-modal", "timeoutMs": 400})
+        check("waitFor ignores hidden elements", not hidden_wait.get("ok") and "Timed out" in hidden_wait.get("error", ""))
 
         shadow_click = result("clickText", {"text": "Shadow action"})
         check("clickText reaches shadow DOM", shadow_click["label"] == "Shadow action")

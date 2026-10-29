@@ -31,8 +31,8 @@ Firefox MV3 extension with three contexts:
 ```
 sidebar (src/sidebar)                background event page (src/background)
 ┌─────────────────────────┐  port    ┌──────────────────────────────────────┐
-│ Chat / Tasks / Packs    │◄────────►│ main.js   routing, sessions, updates │
-│ / Activity / Models     │ messages │ sessions.js  one run per tab         │
+│ Chat / Chats / Tasks    │◄────────►│ main.js   routing, sessions, updates │
+│ / Packs / Models        │ messages │ sessions.js  one run per tab         │
 │ settings form           │          │ agent.js  loop, compaction, protocol  │
 │ safe Markdown renderer  │          │ tools.js  core tools and risk levels  │
 └─────────────────────────┘          │ packs.js  catalog, modules, prompts  │
@@ -152,10 +152,12 @@ fetched from the network as code, and there is no dynamic import; the Packs
 panel and the `packs/` directory are the same catalog. Installing a pack adds its id to `settings.packs`, and its
 tools and prompt join the next step.
 
-Host gating is two-level. Tools are offered when any open tab matches the pack's
-`hosts`, so a task can open the site and use the pack on a later step. The prompt
-section appears only when the pinned tab itself matches. `packs/sdk.js` gives
-packs the same page helpers, pagination and clipping rules as core tools.
+Host gating follows the pinned tab only. Its host decides the pack tools, the
+prompt section and the pack recipes. A Canvas tab open elsewhere does not add
+Canvas tools to a Google Slides run; start the task on the Canvas tab instead.
+`packs/sdk.js` gives packs the same page helpers, pagination and clipping rules
+as core tools. Pack modules may export `recipes`, and the Tasks panel shows only
+the recipes for the current tab.
 
 The Packs panel's check fetches `packs/index.json` from the repository's main
 branch and marks ids that this build does not include. Code from a newer pack
@@ -328,7 +330,8 @@ Key UI state:
 
 - `app.settings`, transcript, log, notes, models, tab, busy.
 - `app.tabId` / `app.sessions`: the tab in view and a summary of every tab with
-  work or history elsewhere.
+  work or history. The Chats panel lists them all, with Open and Clear actions.
+- `app.recipes`: the core recipes plus the recipes of packs matching this tab.
 - `app.modelsByProvider`: cached model ids per provider, so the Models panel can
   switch between providers without refetching.
 - `app.modelsProvider`: the provider currently open in the Models panel. It is
@@ -462,12 +465,16 @@ Residual risks:
 
 Current checks:
 
-- `node --test tests/logic.test.mjs` covers model sizing, tool menu, pack host
+- `node --test tests/*.test.mjs` covers model sizing, tool menu, pack host
   matching and catalog files, version comparison, tool suggestions, JSON
   fallback parsing, caps and the settings guard.
 - `uv run --with playwright python tests/page_bridge.py` loads the real bridge
   in Chromium against `tests/fixtures/page.html` and checks snapshots, shadow DOM,
-  iframe fields, clickText with nth, multi-field fill, press, waitFor and errors.
+  iframe fields, clickText with nth, stale refs, multi-field fill, press, waitFor
+  and errors.
+- `uv run --with playwright python tests/sidebar_smoke.py` loads the sidebar with
+  a stubbed port and checks the six panels, the Chats list, per-tab recipes and
+  pack markers.
 - A stubbed `browser` harness imports `main.js` and checks hello and state
   routing, per-tab reset isolation, the settings guard, pinned-tab resolution,
   pack install, the remote pack check, update download and screenshot capture.

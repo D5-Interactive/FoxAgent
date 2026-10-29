@@ -96,11 +96,15 @@ function summarize(session) {
     busy: session.busy,
     status: session.status,
     approvals: session.pending.size,
-    messages: session.transcript.length
+    messages: session.transcript.length,
+    lastAt: session.lastAt
   };
 }
 function allSummaries() {
-  return [...sessions.values()].filter((s) => s.busy || s.pending.size || s.transcript.length).map(summarize);
+  return [...sessions.values()]
+    .filter((s) => s.busy || s.pending.size || s.transcript.length)
+    .map(summarize)
+    .sort((a, b) => b.lastAt - a.lastAt);
 }
 function toDto(session) {
   return {
@@ -118,14 +122,28 @@ const STORE_KEY = "foxagent.sessions";
 function area() {
   return browser.storage.session || browser.storage.local;
 }
+function trimEntries(entries) {
+  const budget = 3e5;
+  const out = [];
+  let used = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = { ...entries[i] };
+    if (entry.text && entry.text.length > 6e3) entry.text = entry.text.slice(0, 6e3);
+    const size = String(entry.text || "").length + 200;
+    if (out.length && used + size > budget) break;
+    out.unshift(entry);
+    used += size;
+  }
+  return out;
+}
 function serializable(session) {
   return {
     tabId: session.tabId,
     windowId: session.windowId,
     title: session.title,
     url: session.url,
-    history: session.history.slice(-CAP),
-    transcript: session.transcript.slice(-CAP),
+    history: trimEntries(session.history.slice(-CAP)),
+    transcript: trimEntries(session.transcript.slice(-CAP)),
     notes: session.notes.slice(-40)
   };
 }
@@ -151,6 +169,7 @@ async function loadSessions() {
     if (!open.has(row.tabId) || sessions.has(row.tabId)) continue;
     const session = makeSession({ id: row.tabId, windowId: row.windowId || 0, title: row.title, url: row.url });
     session.history = Array.isArray(row.history) ? row.history.slice(-CAP) : [];
+    while (session.history.length && session.history[0].role !== "user") session.history.shift();
     session.transcript = Array.isArray(row.transcript) ? row.transcript.slice(-CAP) : [];
     session.notes = Array.isArray(row.notes) ? row.notes : [];
     sessions.set(session.tabId, session);

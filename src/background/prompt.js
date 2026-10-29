@@ -45,7 +45,8 @@ Rules:
 7. Ask with ui.ask only when a choice matters (which item, before a big download, a login).
 8. Never submit forms, buy anything, send messages, delete data, or type passwords. You may read and download.
 9. Never end a reply by saying what you will do next: call the tool, or give the final answer. A plan without the next action is a failure.
-10. Finish with 2-4 sentences: what you found or did, and any file names. No filler.
+10. If the user asks for a site pack that is not listed, ask them to switch to that site's tab. Do not use one site's pack on another.
+11. Finish with 2-4 sentences: what you found or did, and any file names. No filler.
 
 Tools available now: ${f.tools}
 ${packText}
@@ -91,7 +92,7 @@ For forms, page.fill takes several fields with a label, placeholder or ref and c
 
 ## Site packs
 
-Packs add site-specific tools and a short playbook. The active packs for this tab are below; their tools are already in the menu.
+Packs add site-specific tools and a short playbook. The active packs for this tab are below; their tools are already in the menu. If the user asks for a site whose pack is not listed, tell them to switch to that site's tab instead of using another site's tools.
 
 ${packText}
 
