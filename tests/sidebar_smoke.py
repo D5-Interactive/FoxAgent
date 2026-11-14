@@ -139,10 +139,12 @@ def main():
         page.wait_for_timeout(100)
         facts = page.inner_text(".model-facts") if page.locator(".model-facts").count() else ""
         check("models shows detected facts", "4k ctx?" in facts.lower() or "4K CTX?" in facts, facts)
-        page.screenshot(path=os.environ.get("SIDEBAR_SHOT_MODELS", "/tmp/foxagent-models.png"))
+        if os.environ.get("SIDEBAR_SHOT_MODELS"):
+            page.screenshot(path=os.environ["SIDEBAR_SHOT_MODELS"])
         page.click('[data-panel="chat"]')
         page.wait_for_timeout(100)
-        page.screenshot(path=os.environ.get("SIDEBAR_SHOT", "/tmp/foxagent-chat.png"))
+        if os.environ.get("SIDEBAR_SHOT"):
+            page.screenshot(path=os.environ["SIDEBAR_SHOT"])
         check("no console errors", not errors, json.dumps(errors))
         browser.close()
     server.shutdown()
