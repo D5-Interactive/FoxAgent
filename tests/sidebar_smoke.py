@@ -85,7 +85,7 @@ def main():
         page.add_init_script(
             """window.browser = {
               runtime: { connect: () => ({
-                postMessage() {},
+                postMessage(m) { (window.__sent = window.__sent || []).push(m); },
                 onDisconnect: { addListener() {} },
                 onMessage: { addListener(fn) { window.__deliver = fn; } }
               }) },
@@ -110,6 +110,39 @@ def main():
         check("tasks are per tab", "Canvas" not in tasks and "Extract this page" in tasks)
         page.click('[data-panel="packs"]')
         check("pack is not marked active on slides", "this tab" not in page.inner_text("#packList"))
+        deliver = lambda value: page.evaluate("(value) => window.__deliver(value)", value)
+        settings = state()["settings"]
+        settings["providers"]["lmstudio"]["model"] = "qwen3-8b"
+        deliver({"type": "settings", "settings": settings})
+        page.click('[data-panel="chat"]')
+        deliver({"type": "item", "tabId": 2, "item": {"id": "a1", "type": "assistant", "text": "**Done.**"}})
+        deliver({"type": "item", "tabId": 2, "item": {"id": "n1", "type": "notice", "level": "error", "text": "Server unreachable", "action": "retry"}})
+        page.wait_for_timeout(100)
+        check("replies have a copy button", page.locator(".msg.assistant .msg-copy").count() == 1)
+        check("error notice offers retry", page.locator(".notice-actions .btn").inner_text() == "Retry")
+        deliver({"type": "item", "tabId": 2, "item": {"id": "n2", "type": "notice", "level": "warn", "text": "Step limit reached", "action": "continue"}})
+        page.wait_for_timeout(100)
+        check("only the newest notice keeps its action", page.locator(".notice-actions").count() == 1 and page.locator(".notice-actions .btn").inner_text() == "Continue")
+        page.click(".notice-actions .btn")
+        sent = page.evaluate("window.__sent || []")
+        check("continue sends a continue message", any(m.get("type") == "send" and m.get("text") == "continue" for m in sent), json.dumps(sent[-3:]))
+        deliver({"type": "usage", "tabId": 2, "usage": {"promptTokens": 12000, "completionTokens": 500, "estimated": False, "window": 16384}})
+        page.wait_for_timeout(50)
+        check("context meter shows use of the window", page.is_visible("#ctxMeter") and page.inner_text("#ctxText") == "13k / 16k", page.inner_text("#ctxText"))
+        check("context meter warns past 75%", page.get_attribute("#ctxMeter", "data-level") == "warn")
+        page.fill("#input", "first question")
+        page.press("#input", "Enter")
+        page.press("#input", "ArrowUp")
+        check("arrow up recalls the last message", page.input_value("#input") == "first question")
+        deliver({"type": "modelInfo", "info": {"provider": "lmstudio", "model": "qwen3-8b", "window": 4096, "guessed": True, "tools": True, "vision": False, "paramsB": 8, "small": True}})
+        page.click('[data-panel="models"]')
+        page.wait_for_timeout(100)
+        facts = page.inner_text(".model-facts") if page.locator(".model-facts").count() else ""
+        check("models shows detected facts", "4k ctx?" in facts.lower() or "4K CTX?" in facts, facts)
+        page.screenshot(path=os.environ.get("SIDEBAR_SHOT_MODELS", "/tmp/foxagent-models.png"))
+        page.click('[data-panel="chat"]')
+        page.wait_for_timeout(100)
+        page.screenshot(path=os.environ.get("SIDEBAR_SHOT", "/tmp/foxagent-chat.png"))
         check("no console errors", not errors, json.dumps(errors))
         browser.close()
     server.shutdown()

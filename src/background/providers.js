@@ -122,6 +122,8 @@ function readOpenAi(json, acc, onDelta) {
   if (json?.error) {
     throw new Error(json.error.message || json.error.type || "The provider returned an error.");
   }
+  // With stream_options.include_usage the last chunk has usage and no choices.
+  if (json?.usage) acc.usage = json.usage;
   const choice = json?.choices?.[0];
   if (!choice) return;
   const delta = choice.delta || choice.message || {};
@@ -660,6 +662,9 @@ async function streamChat(opts) {
     payload.tools = opts.tools;
     payload.tool_choice = "auto";
   }
+  // Ask for token counts in the stream where the server is known to accept
+  // the field; others may reject unknown keys.
+  if (["openai", "lmstudio", "vllm", "llamacpp"].includes(provider.key)) payload.stream_options = { include_usage: true };
   return streamRequest({
     provider,
     kind,

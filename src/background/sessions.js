@@ -83,6 +83,7 @@ function clearNotes(session) {
   session.notes = [];
 }
 function resetSession(session) {
+  session.usage = null;
   session.history = [];
   session.transcript = [];
   session.notes = [];
@@ -115,6 +116,7 @@ function toDto(session) {
     status: session.status,
     transcript: session.transcript,
     notes: session.notes,
+    usage: session.usage || null,
     pending: [...session.pending.values()].map((entry) => entry.request)
   };
 }

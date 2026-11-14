@@ -155,8 +155,12 @@ export async function modelInfo(provider, model, { refresh = false } = {}) {
   } catch {
     info = emptyInfo(provider.key);
   }
-  const ok = Boolean(info.contextWindow || info.trainedWindow || info.tools != null);
-  cache.set(cacheKey, { at: Date.now(), ok, info });
+  // A guessed window (LM Studio before the model is loaded) changes as soon as
+  // the first request loads the model, so it is never cached.
+  if (!info.guessed) {
+    const ok = Boolean(info.contextWindow || info.trainedWindow || info.tools != null);
+    cache.set(cacheKey, { at: Date.now(), ok, info });
+  }
   return info;
 }
 

@@ -5,9 +5,10 @@ import {
   saveSettings,
   clearLog,
   activeModel,
+  activeProvider,
   PROVIDERS
 } from "./store.js";
-import { runAgent } from "./agent.js";
+import { runAgent, describeModel } from "./agent.js";
 import { listModels } from "./providers.js";
 import { RECIPES } from "./recipes.js";
 import { activeTab, tabInfo, hostOf } from "./page.js";
@@ -98,6 +99,7 @@ async function stateMessage(tab, session) {
     transcript: session?.transcript || [],
     notes: session?.notes || [],
     busy: Boolean(session?.busy),
+    usage: session?.usage || null,
     pending: session ? [...session.pending.values()].map((entry) => entry.request) : [],
     sessions: allSummaries(),
     packs: await packList(state.settings.packs || [], host),
@@ -277,9 +279,11 @@ function requestApproval(session, req) {
 function requestAnswer(session, req) {
   return waitFor(session, "ask", req, 3e5, "(no answer \u2014 the user did not respond)");
 }
-async function startRun(session, text, origin = "chat") {
+// resume: run again from the existing history without a new user message
+// (Retry after an error).
+async function startRun(session, text, origin = "chat", { resume = false } = {}) {
   const prompt = String(text || "").trim();
-  if (!prompt) return;
+  if (!prompt && !resume) return;
   if (session.busy) {
     toast("This tab is already working. Stop it first.", "warn");
     return;
@@ -304,9 +308,11 @@ async function startRun(session, text, origin = "chat") {
   session.title = tab.title || session.title;
   session.url = tab.url || session.url;
   session.windowId = tab.windowId;
-  const userItem = addTranscript(session, { type: "user", text: prompt });
-  session.history.push({ role: "user", text: prompt, at: Date.now(), origin });
-  emitSession(session, { type: "item", item: userItem });
+  if (!resume) {
+    const userItem = addTranscript(session, { type: "user", text: prompt });
+    session.history.push({ role: "user", text: prompt, at: Date.now(), origin });
+    emitSession(session, { type: "item", item: userItem });
+  }
   emitSession(session, { type: "busy", busy: true, status: "working" });
   try {
     await persist();
@@ -322,7 +328,8 @@ async function startRun(session, text, origin = "chat") {
     const item = addTranscript(session, {
       type: "notice",
       text: err?.message || String(err),
-      level: err?.aborted ? "warn" : "error"
+      level: err?.aborted ? "warn" : "error",
+      action: err?.aborted ? void 0 : "retry"
     });
     emitSession(session, { type: "item", item });
   } finally {
@@ -377,6 +384,33 @@ async function handleMessage(msg, port, meta) {
         return;
       }
       startRun(session, msg.text);
+      return;
+    }
+    case "retry": {
+      const tab = await tabForMessage(msg, meta);
+      const session = getSession(tab);
+      if (!activeModel()) {
+        send(port, { type: "needModel" });
+        return;
+      }
+      // Drop a dangling assistant reply with no calls so the model answers the
+      // request again instead of seeing its own failed attempt as complete.
+      while (session.history.length && session.history.at(-1).role === "assistant" && !session.history.at(-1).calls?.length) session.history.pop();
+      if (!session.history.length) {
+        send(port, { type: "toast", text: "Nothing to retry in this tab.", level: "warn" });
+        return;
+      }
+      startRun(session, "", "retry", { resume: true });
+      return;
+    }
+    case "modelInfo": {
+      const provider = activeProvider();
+      try {
+        const info = await describeModel(provider, provider.model, state.settings, { refresh: Boolean(msg.refresh) });
+        send(port, { type: "modelInfo", info });
+      } catch {
+        send(port, { type: "modelInfo", info: null });
+      }
       return;
     }
     case "runRecipe": {
@@ -500,7 +534,11 @@ Extra context from me: ${extra}` : ""), recipe.id);
       }
       const patch = { provider: key, providers: { [key]: { model } } };
       const baseUrl = String(msg.baseUrl || "").trim();
-      if (baseUrl && /^https?:\/\//i.test(baseUrl)) patch.providers[key].baseUrl = baseUrl;
+      if (baseUrl && /^https?:\/\//i.test(baseUrl)) {
+        // Models listed by the old server say nothing about the new one.
+        if (baseUrl !== state.settings.providers[key]?.baseUrl) modelCache.delete(key);
+        patch.providers[key].baseUrl = baseUrl;
+      }
       await saveSettings(patch);
       broadcastAll({ type: "settings", settings: publicSettings() });
       const cached = modelCache.get(key);

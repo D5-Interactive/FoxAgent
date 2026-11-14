@@ -315,8 +315,8 @@ function parseTextCalls(text) {
   }
   return { calls: calls.slice(0, MAX_CALLS_PER_TURN), text: stripped.replace(/\n{3,}/g, "\n\n").trim() };
 }
-function notice(session, emit, text, level = "info") {
-  const item = addTranscript(session, { type: "notice", text, level });
+function notice(session, emit, text, level = "info", extra = {}) {
+  const item = addTranscript(session, { type: "notice", text, level, ...extra });
   emit({ type: "item", item });
 }
 export async function executeCall(call, ctx) {
@@ -448,6 +448,40 @@ function describeWindow(provider, info, window) {
   }
   return `${label} is serving this model with a ${n}-token context. FoxAgent will keep the conversation inside it; raise the server's context size for longer tasks.`;
 }
+// What the context meter shows: the server's own token counts when it sends
+// them, otherwise an estimate from what was sent.
+function stepUsage(response, plan, sentChars) {
+  const u = response?.usage || {};
+  const prompt = Number(u.prompt_tokens ?? u.input_tokens ?? 0) + Number(u.cache_read_input_tokens || 0) + Number(u.cache_creation_input_tokens || 0);
+  const completion = Number(u.completion_tokens ?? u.output_tokens ?? 0);
+  return {
+    promptTokens: prompt || estimateTokens(sentChars),
+    completionTokens: completion || estimateTokens(String(response?.text || "").length),
+    estimated: !prompt,
+    window: plan.windowTokens || null,
+    at: Date.now()
+  };
+}
+// Model facts for the Models panel, using the same rules a run would.
+async function describeModel(provider, model, settings, { refresh = false } = {}) {
+  if (!model) return null;
+  const info = await modelInfo(provider, model, { refresh });
+  const memo = learnedFor(provider, model);
+  const window = effectiveWindow(provider, info, settings, memo);
+  return {
+    provider: provider.key,
+    model,
+    window,
+    trainedWindow: info.trainedWindow,
+    guessed: Boolean(info.guessed),
+    tools: settings.toolMode === "json" || memo.noNativeTools ? false : info.tools,
+    vision: settings.vision === "auto" && info.vision != null ? info.vision : supportsVision(model, settings.vision),
+    paramsB: info.paramsB || modelSize(model) || 0,
+    small: isSmallModel(model) || (info.paramsB > 0 && info.paramsB <= 12) || Boolean(window && window < 16384),
+    source: info.source,
+    cloud: Boolean(provider.cloud)
+  };
+}
 async function runAgent({ session, settings, emit, approve, ask, signal, small: forceSmall }) {
   const provider = activeProvider();
   const model = activeModel();
@@ -520,11 +554,13 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
     emit({ type: "phase", phase: "thinking", step: steps + 1, maxSteps: stepCap });
     emit({ type: "assistant_start" });
     let response;
+    const messages = toProviderMessages(session, settings, tab, tools, small, prompts, vision, { system, historyChars: plan.historyChars, native: useNative });
+    const sentChars = JSON.stringify(messages).length + (schemas ? JSON.stringify(schemas).length : 0);
     try {
       response = await streamChat({
         provider,
         model,
-        messages: toProviderMessages(session, settings, tab, tools, small, prompts, vision, { system, historyChars: plan.historyChars, native: useNative }),
+        messages,
         tools: schemas,
         temperature: settings.temperature,
         maxTokens: plan.maxTokens,
@@ -534,6 +570,8 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
       });
       if (sendingImage) session.lastImage = null;
       retries = 0;
+      session.usage = stepUsage(response, plan, sentChars);
+      emit({ type: "usage", usage: session.usage });
     } catch (err) {
       if (err?.aborted) {
         notice(session, emit, "Stopped.", "warn");
@@ -602,7 +640,7 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
         continue;
       }
       if (response.finishReason === "length") {
-        notice(session, emit, plan.windowTokens ? `The model hit its output limit mid-answer (${plan.maxTokens.toLocaleString("en-US")} tokens, a quarter of its context). A larger context on the model server leaves room for longer replies.` : "The model hit its output limit mid-answer. Raise Max reply tokens in Settings, then ask it to continue.", "warn");
+        notice(session, emit, plan.windowTokens ? `The model hit its output limit mid-answer (${plan.maxTokens.toLocaleString("en-US")} tokens, a quarter of its context). A larger context on the model server leaves room for longer replies.` : "The model hit its output limit mid-answer. Raise Max reply tokens in Settings, then ask it to continue.", "warn", { action: "continue" });
       }
       if (!text) {
         const thoughtOnly = Boolean(String(response.text || "").trim());
@@ -657,12 +695,13 @@ ${result.text}`;
     if (signal.aborted) break;
   }
   if (steps >= stepCap) {
-    notice(session, emit, `Step limit reached (${stepCap}). Progress is in the scratchpad; send "continue" to keep going, or raise the limit in Settings.`, "warn");
+    notice(session, emit, `Step limit reached (${stepCap}). Progress is in the scratchpad; send "continue" to keep going, or raise the limit in Settings.`, "warn", { action: "continue" });
   }
   return { steps, text: lastText, small, vision };
 }
 export {
   allowedBySite,
+  describeModel,
   fitHistory,
   toProviderMessages,
   isSmallModel,

@@ -39,6 +39,7 @@
 | **History and notes** | Conversation transcript, scratchpad, and an exportable activity log |
 | **One task per tab** | Each tab keeps its transcript, scratchpad, running task, pack tools and recipes; a strip and a Chats list show the rest |
 | **Small-model tuned** | Compact prompts, smaller snapshots, click by text, multi-field fill, waiting, and pack shortcuts |
+| **Fits your model's context** | Reads the real context window, size and tool and image support from local servers, budgets every step to fit, and shows a context meter beside Send |
 | **Precise page control** | CSS, text and role queries; shadow DOM and same-origin iframe traversal; form fill and key presses |
 | **Vision** | Screenshot a tab and send the image to a vision model, then clear it so later steps are not charged for it |
 | **Light and night UI** | Monochrome white-on-black styling with a moon toggle for the near-black variant |
@@ -83,7 +84,7 @@ Open the **Models** tab, or use the model button in the top bar.
 
 ### 3. Start working
 
-- **Chat**: ask about the current page, run a task, and approve actions as they come.
+- **Chat**: ask about the current page, run a task, and approve actions as they come. The meter beside Send shows how full the model's context was on the last step. Copy any reply, Retry after an error, press Up to recall a message, and Esc to stop.
 - **Tabs**: each tab keeps its own conversation and task. A strip under the tabs shows work still running elsewhere.
 - **Chats**: one list of every tab conversation, with Open and Clear actions.
 - **Packs**: install the site tools you need, such as a site API or a careful UI playbook.

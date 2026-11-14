@@ -1,5 +1,7 @@
-const VISION = /(vision|-vl\b|\bvl-|llava|gemma-?[34]|qwen[\d.]*-?vl|internvl|minicpm-v|pixtral|gpt-4o|gpt-4\.1|gpt-5|o[34]-|claude|gemini|grok.*vision|mistral-small-3|llama-?3\.2|llama-?4|glm-4\.[\dv]+|nemotron.*vl)/i;
-const TEXT_ONLY = /(coder|embed|whisper|tts|rerank|guard)/i;
+const VISION = /(vision|-vl\b|\bvl-|llava|gemma-?[34]|qwen[\d.]*-?vl|internvl|minicpm-v|pixtral|gpt-4o|gpt-4\.1|gpt-5|o[34]-|claude|gemini|grok.*vision|mistral-small-3|llama-?3\.2.*(?:vision|11b|90b)|llama-?4|glm-4\.[\dv]+|nemotron.*vl)/i;
+// Text-only members of otherwise multimodal families: Gemma 3 1B/270M and the
+// small Llama 3.2 models. Sending them an image fails or is ignored.
+const TEXT_ONLY = /(coder|embed|whisper|tts|rerank|guard|gemma-?3[^a-z0-9]*(?:1b|270m)\b)/i;
 function supportsVision(model, setting = "auto") {
   if (setting === "on") return true;
   if (setting === "off") return false;

@@ -241,3 +241,61 @@ test("local context setting is clamped", () => {
   assert.equal(cleanSettingsPatch({ localContextTokens: 1e7 }).localContextTokens, 262144);
   assert.equal(cleanSettingsPatch({ localContextTokens: 32768 }).localContextTokens, 32768);
 });
+
+test("usage arrives from the final stream chunk, and only where the field is safe", async () => {
+  const real = globalThis.fetch;
+  const bodies = [];
+  const enc = new TextEncoder();
+  globalThis.fetch = async (url, opts) => {
+    bodies.push(JSON.parse(opts.body));
+    const events = [
+      { choices: [{ delta: { content: "hi" } }] },
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+      { choices: [], usage: { prompt_tokens: 1234, completion_tokens: 5 } }
+    ];
+    const chunks = [...events.map((e) => enc.encode("data: " + JSON.stringify(e) + "\n\n")), enc.encode("data: [DONE]\n\n")];
+    return { ok: true, status: 200, headers: { get: () => "text/event-stream" }, body: { getReader: () => ({ read: async () => (chunks.length ? { done: false, value: chunks.shift() } : { done: true }) }) } };
+  };
+  try {
+    const res = await streamChat({ provider: { key: "lmstudio", baseUrl: "http://127.0.0.1:1/v1" }, model: "m", messages: [{ role: "user", content: "x" }] });
+    assert.equal(res.usage.prompt_tokens, 1234);
+    assert.deepEqual(bodies[0].stream_options, { include_usage: true });
+    await streamChat({ provider: { key: "mistral", baseUrl: "http://127.0.0.1:1/v1", apiKey: "k", cloud: true }, model: "m", messages: [{ role: "user", content: "x" }] });
+    assert.equal(bodies[1].stream_options, undefined);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+test("model description for the Models panel follows run rules", async () => {
+  const { describeModel } = await import("../src/background/agent.js");
+  const cloud = await describeModel({ key: "openai", cloud: true, baseUrl: "https://api.openai.com/v1" }, "gpt-4o", { ...settings });
+  assert.equal(cloud.window, null);
+  assert.equal(cloud.cloud, true);
+  assert.equal(cloud.vision, true);
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url) => ({
+    ok: true,
+    json: async () => (String(url).endsWith("/api/show")
+      ? { model_info: { "gemma3.context_length": 131072 }, capabilities: ["completion", "vision"], details: { parameter_size: "4.3B" } }
+      : { models: [] })
+  });
+  try {
+    const local = await describeModel({ key: "ollama", baseUrl: "http://127.0.0.1:11434/v1" }, "gemma3:4b", { ...settings, localContextTokens: 8192 }, { refresh: true });
+    assert.equal(local.window, 8192);
+    assert.equal(local.tools, false);
+    assert.equal(local.vision, true);
+    assert.equal(local.small, true);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+test("vision guess skips text-only members of multimodal families", async () => {
+  const { supportsVision } = await import("../src/background/vision.js");
+  assert.equal(supportsVision("llama3.2:3b"), false);
+  assert.equal(supportsVision("llama3.2-vision:11b"), true);
+  assert.equal(supportsVision("gemma3:1b"), false);
+  assert.equal(supportsVision("gemma3:12b"), true);
+  assert.equal(supportsVision("google/gemma-3-270m"), false);
+});

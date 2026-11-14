@@ -67,6 +67,10 @@ accumulator, one friendly-error path, and SSE plus non-streaming JSON handling.
 Adding another OpenAI-compatible runtime is usually just a catalog entry in
 `store.js`.
 
+Ollama is the exception on the request path: chat goes to its native
+`/api/chat` (NDJSON stream) so `num_ctx` and `keep_alive` take effect; model
+listing still uses `/v1/models`. See History compaction.
+
 Anthropic's Messages API is different enough to need a dedicated adapter in the
 same file: `POST /messages`, `x-api-key` and `anthropic-version` headers, a
 required `max_tokens`, `input_schema` tools, `tool_use`/`tool_result` content
@@ -136,8 +140,10 @@ the session strip ("other tabs working", with an approval marker).
 
 ### Small-model profile
 
-`modelSize` parses the model id (4b, 9b, e2b, e4b, 70b). At 12B or less the run
-switches to a compact prompt, a 24-step cap, 60-element snapshots and a 6,000
+`modelSize` parses the model id (4b, 9b, e2b, e4b, 70b). The size the server
+reports wins when there is one (Ollama's `parameter_size` makes `llama3.2` a 3B
+model), and a context window under 16k selects the profile too. At 12B or less
+the run switches to a compact prompt, a 24-step cap, 60-element snapshots and a 6,000
 character page-read cap. The tool menu drops `page.links` and `browser.switch`,
 and `page.clickText` lets the model click by visible label instead of tracking
 refs. Site work is expressed as pack tools such as `canvas.todo`,
@@ -365,6 +371,17 @@ Key UI state:
   only made active by **Use this model**.
 - `app.pending`: ids of visible approval/question cards.
 - `app.streaming`: the live assistant bubble.
+- `app.usage`: the last step's token use for the tab in view, from a `usage`
+  event. The context meter beside Send shows it against the model's window
+  and turns amber at 75% and red at 90%. Counts come from the server when it
+  sends them (`stream_options.include_usage` for OpenAI, LM Studio, vLLM and
+  llama.cpp; Ollama's eval counts; Anthropic usage) and are marked as estimates
+  otherwise.
+- `app.modelInfo`: what the server reported about the model in use (window,
+  tools, vision, size, compact profile), shown as tags in Models and in the model
+  button tooltip.
+- `app.sent`: messages sent from this sidebar, recalled with Up and Down in an
+  empty composer. Kept in memory only.
 
 Provider, base URL, API key and model controls live only in the Models panel.
 Chat onboarding is a short pointer to it, and Settings shows the active model
@@ -381,7 +398,14 @@ shows Stop. It no longer blocks the entire browser: another tab can start its ow
 run. The composer stays usable for typing, and starting a second run in the same
 tab is refused until that turn ends.
 
-Streaming is rendered as plain text while it arrives. The final assistant item
+Assistant replies have a Copy button (Markdown source). A failed run ends with
+an error notice offering **Retry**, which runs again from the existing history
+without a new user message; step-limit and output-limit notices offer
+**Continue**. Only the newest notice keeps its button. Esc stops the running task
+in the tab in view.
+
+Streaming is rendered as plain text while it arrives. Inline `<think>` blocks
+are hidden while they stream and the status line reads "thinking". The final assistant item
 is re-rendered as Markdown when `assistant_end` arrives, which avoids parsing
 half-written code fences on every token.
 
@@ -494,14 +518,18 @@ Current checks:
 
 - `node --test tests/*.test.mjs` covers model sizing, tool menu, pack host
   matching and catalog files, version comparison, tool suggestions, JSON
-  fallback parsing, caps and the settings guard.
+  fallback parsing, caps and the settings guard. `context.test.mjs` covers the
+  context budget, model-info parsing for each local server, the native Ollama
+  adapter and its fallback, error classification, step dropping, message
+  normalization, usage reporting and vision guessing.
 - `uv run --with playwright python tests/page_bridge.py` loads the real bridge
   in Chromium against `tests/fixtures/page.html` and checks snapshots, shadow DOM,
   iframe fields, clickText with nth, stale refs, multi-field fill, press, waitFor
   and errors.
 - `uv run --with playwright python tests/sidebar_smoke.py` loads the sidebar with
-  a stubbed port and checks the six panels, the Chats list, per-tab recipes and
-  pack markers.
+  a stubbed port and checks the six panels, the Chats list, per-tab recipes,
+  pack markers, reply Copy, Retry and Continue actions, the context meter, input
+  recall and the model facts in Models.
 - A stubbed `browser` harness imports `main.js` and checks hello and state
   routing, per-tab reset isolation, the settings guard, pinned-tab resolution,
   pack install, the remote pack check, update download and screenshot capture.

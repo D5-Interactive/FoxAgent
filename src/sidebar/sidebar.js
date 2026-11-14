@@ -35,7 +35,12 @@ const app = {
   panel: "chat",
   pending: new Map(),
   streaming: null,
-  scrollQueued: false
+  streamRaw: "",
+  scrollQueued: false,
+  usage: null,
+  modelInfo: null,
+  sent: [],
+  sentIdx: -1
 };
 let port = null;
 let reconnectTimer = null;
@@ -276,7 +281,23 @@ function itemNode(item) {
     const bubble = document.createElement("div");
     bubble.className = "bubble";
     bubble.append(renderMarkdown(item.text || ""));
-    row.append(bubble);
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "msg-copy";
+    copy.textContent = "Copy";
+    copy.title = "Copy this reply as Markdown";
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(item.text || "");
+        copy.textContent = "Copied";
+      } catch {
+        copy.textContent = "Copy failed";
+      }
+      setTimeout(() => {
+        copy.textContent = "Copy";
+      }, 1400);
+    });
+    row.append(bubble, copy);
     return row;
   }
   if (item.type === "notice") {
@@ -284,6 +305,18 @@ function itemNode(item) {
     div2.className = "notice";
     div2.dataset.level = item.level || "info";
     div2.textContent = item.text || "";
+    if (item.action === "retry" || item.action === "continue") {
+      const actions = document.createElement("div");
+      actions.className = "notice-actions";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn ghost sm";
+      btn.textContent = item.action === "retry" ? "Retry" : "Continue";
+      btn.title = item.action === "retry" ? "Run the last request again" : "Send \u201ccontinue\u201d to pick up where it stopped";
+      btn.addEventListener("click", () => runNoticeAction(item.action, actions));
+      actions.append(btn);
+      div2.append(actions);
+    }
     return div2;
   }
   if (item.type === "tool") {
@@ -328,9 +361,33 @@ function itemNode(item) {
   div.textContent = item.text || "";
   return div;
 }
+// Retry and Continue only make sense on the newest item.
+function pruneNoticeActions() {
+  const holder = $("transcript");
+  const last = holder.lastElementChild;
+  holder.querySelectorAll(".notice-actions").forEach((node) => {
+    if (node.parentElement !== last) node.remove();
+  });
+}
+function runNoticeAction(action, node) {
+  if (app.busy) {
+    showToast("This tab is already working.", "warn");
+    return;
+  }
+  if (!currentModel()) {
+    showPanel("models");
+    showToast("Pick a model first.", "warn");
+    return;
+  }
+  node?.remove();
+  if (action === "retry") send({ type: "retry", tabId: app.tabId });
+  else send({ type: "send", text: "continue", tabId: app.tabId });
+  setStatus(action === "retry" ? "retrying\u2026" : "continuing\u2026", true);
+}
 function renderTranscript(forceScroll = false) {
   const holder = $("transcript");
   holder.replaceChildren(...app.transcript.map(itemNode));
+  pruneNoticeActions();
   if (forceScroll) scrollBottom(true);
 }
 function appendTranscript(item) {
@@ -338,7 +395,49 @@ function appendTranscript(item) {
   if (app.transcript.some((x) => x.id === item.id)) return;
   app.transcript.push(item);
   $("transcript").append(itemNode(item));
+  pruneNoticeActions();
   scrollBottom(false);
+}
+function fmtTokens(n) {
+  const v = Number(n) || 0;
+  if (v < 1e3) return String(v);
+  return (v / 1e3).toFixed(v >= 1e4 ? 0 : 1).replace(/\.0$/, "") + "k";
+}
+// Windows are powers of two and are spoken of that way: 4096 is "4k".
+function fmtWindow(n) {
+  const v = Number(n) || 0;
+  return v >= 1024 && v % 1024 === 0 ? `${v / 1024}k` : fmtTokens(v);
+}
+// Context meter: how much of the window the last step used.
+function renderUsage() {
+  const el = $("ctxMeter");
+  const u = app.usage;
+  if (!u || !u.promptTokens) {
+    el.hidden = true;
+    return;
+  }
+  const used = u.promptTokens + (u.completionTokens || 0);
+  const pct = u.window ? Math.min(100, Math.round(used / u.window * 100)) : null;
+  el.hidden = false;
+  $("ctxText").textContent = (u.estimated ? "\u2248" : "") + fmtTokens(used) + (u.window ? " / " + fmtWindow(u.window) : " tok");
+  el.querySelector(".ctx-bar").hidden = pct == null;
+  $("ctxFill").style.width = (pct ?? 0) + "%";
+  el.dataset.level = pct == null ? "" : pct >= 90 ? "bad" : pct >= 75 ? "warn" : "";
+  el.setAttribute("aria-valuenow", String(pct ?? 0));
+  el.title = `Last step: ${u.estimated ? "about " : ""}${u.promptTokens.toLocaleString()} prompt + ${(u.completionTokens || 0).toLocaleString()} reply tokens` + (u.window ? ` of a ${u.window.toLocaleString()}-token context.` : ".") + (u.estimated ? " Estimated: the server did not report counts." : "");
+}
+// Hide inline reasoning while it streams; the final reply drops it too.
+const THINK_TAG = /<\/?(think|thinking|reasoning)>/i;
+function visibleStream(raw) {
+  let text = raw.replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, "");
+  const close = text.search(/<\/(think|thinking|reasoning)>/i);
+  if (close !== -1 && !/<(think|thinking|reasoning)>/i.test(text.slice(0, close))) {
+    text = text.slice(close).replace(/^<\/[a-z]+>/i, "");
+  }
+  const open = text.search(/<(think|thinking|reasoning)>/i);
+  const thinking = open !== -1;
+  if (thinking) text = text.slice(0, open);
+  return { text: text.replace(/^\s+/, ""), thinking };
 }
 function isNearBottom() {
   const el = $("chatScroll");
@@ -363,20 +462,29 @@ function startStreaming() {
   const bubble = streamingBubble();
   bubble.textContent = "";
   app.streaming = bubble;
+  app.streamRaw = "";
   scrollBottom(true);
 }
 function onDelta(text) {
   const bubble = app.streaming || streamingBubble();
   app.streaming = bubble;
-  bubble.textContent += text;
+  app.streamRaw += text;
+  if (THINK_TAG.test(app.streamRaw)) {
+    const view = visibleStream(app.streamRaw);
+    bubble.textContent = view.text;
+    setStatus(view.thinking || !view.text ? "thinking\u2026" : "writing\u2026", true);
+  } else {
+    bubble.textContent += text;
+    setStatus("writing\u2026", true);
+  }
   scrollBottom(false);
-  setStatus("writing\u2026", true);
 }
 function endStreaming(msg) {
   $("streaming").hidden = true;
   const bubble = $("streaming").querySelector(".bubble");
   bubble.textContent = "";
   app.streaming = null;
+  app.streamRaw = "";
   if (msg?.item) appendTranscript(msg.item);
   else if (msg?.text) {
     const item = { id: "local_" + Date.now(), type: "assistant", text: msg.text };
@@ -391,6 +499,7 @@ function setStatus(text, active = false) {
 }
 function setBusy(busy) {
   app.busy = busy;
+  document.body.dataset.busy = busy ? "true" : "false";
   $("sendBtn").disabled = busy;
   $("stopBtn").hidden = !busy;
   $("input").placeholder = busy ? "Working\u2026 stop to intervene" : "Ask about this page, or run a task\u2026";
@@ -570,8 +679,10 @@ function renderModelButton() {
   const btn = $("modelBtn");
   btn.textContent = model || "Choose model";
   btn.dataset.empty = model ? "false" : "true";
+  const info = app.modelInfo && app.modelInfo.model === model && app.modelInfo.provider === app.settings?.provider ? app.modelInfo : null;
+  const ctx = info?.window ? ` \xB7 ${info.window.toLocaleString()}-token context${info.guessed ? " (assumed)" : ""}` : "";
   btn.title = model ? `${model}
-${providerLabel(app.settings.provider)} \u2014 click to change` : "Choose a local server or cloud model";
+${providerLabel(app.settings.provider)}${ctx} \u2014 click to change` : "Choose a local server or cloud model";
 }
 function renderWelcome() {
   const show = !currentModel();
@@ -638,6 +749,27 @@ function renderModelCurrent() {
   const line = mk("div", `${meta.label || key || "No provider"} \xB7 ${meta.cloud ? "cloud" : "local"}`);
   line.className = "model-current-provider";
   box.append(top, model, line);
+  const info = app.modelInfo;
+  if (info && info.model === stored.model && info.provider === key) {
+    const facts = document.createElement("div");
+    facts.className = "model-facts";
+    const add = (text, tone, title) => {
+      const t = mk("span", text);
+      t.className = "tag";
+      if (tone) t.dataset.tone = tone;
+      if (title) t.title = title;
+      facts.append(t);
+    };
+    if (info.window) {
+      const title = info.guessed ? "Assumed: the server has not loaded this model yet." : info.trainedWindow && info.trainedWindow > info.window ? `Context in use. The model supports up to ${info.trainedWindow.toLocaleString()} tokens.` : "Context window in use.";
+      add(`${fmtWindow(info.window)} ctx${info.guessed ? "?" : ""}`, info.window < 8192 ? "warn" : "", title);
+    }
+    if (info.tools != null) add(info.tools ? "tools" : "json tools", info.tools ? "ok" : "warn", info.tools ? "Native tool calls." : "Tools run through the JSON protocol.");
+    if (info.vision) add("vision", "ok", "Can receive screenshots.");
+    if (info.paramsB) add(`${info.paramsB}B`, "", "Parameter count.");
+    if (info.small) add("compact", "", "Uses the compact prompt, shorter tool menu and smaller page reads.");
+    if (facts.childNodes.length) box.append(facts);
+  }
 }
 function providerCard(key, meta) {
   const stored = app.settings?.providers?.[key] || {};
@@ -1046,7 +1178,10 @@ function showPanel(name) {
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.setAttribute("aria-selected", tab.dataset.panel === name ? "true" : "false");
   });
-  if (name === "models") renderModelsPanel(true);
+  if (name === "models") {
+    renderModelsPanel(true);
+    send({ type: "modelInfo", refresh: true });
+  }
   if (name === "settings") fillSettings();
   if (name === "chat") {
     setTimeout(() => $("input").focus(), 30);
@@ -1067,6 +1202,8 @@ function applyState(msg) {
   app.transcript = Array.isArray(msg.transcript) ? msg.transcript : [];
   app.log = Array.isArray(msg.log) ? msg.log : [];
   app.notes = Array.isArray(msg.notes) ? msg.notes : [];
+  app.usage = msg.usage || null;
+  renderUsage();
   app.models = Array.isArray(msg.models) ? msg.models : [];
   app.modelsByProvider = msg.modelsByProvider && typeof msg.modelsByProvider === "object" ? msg.modelsByProvider : {};
   if (!app.modelsProvider) app.modelsProvider = msg.provider || app.settings?.provider || null;
@@ -1110,6 +1247,8 @@ function applyTab(msg) {
   if (!changed) return;
   app.transcript = Array.isArray(dto?.transcript) ? dto.transcript : [];
   app.notes = Array.isArray(dto?.notes) ? dto.notes : [];
+  app.usage = dto?.usage || null;
+  renderUsage();
   app.streaming = null;
   $("streaming").hidden = true;
   $("pending").replaceChildren();
@@ -1376,6 +1515,17 @@ function onMessage(msg) {
     case "item":
       if (mine && msg.item) appendTranscript(msg.item);
       break;
+    case "usage":
+      if (mine) {
+        app.usage = msg.usage || null;
+        renderUsage();
+      }
+      break;
+    case "modelInfo":
+      app.modelInfo = msg.info || null;
+      if (app.panel === "models") renderModelCurrent();
+      renderModelButton();
+      break;
     case "assistant_start":
       if (mine) startStreaming();
       break;
@@ -1459,6 +1609,9 @@ function onMessage(msg) {
     }
     case "settings":
       app.settings = msg.settings;
+      if (currentModel() && (app.modelInfo?.model !== currentModel() || app.modelInfo?.provider !== app.settings.provider)) {
+        send({ type: "modelInfo" });
+      }
       renderModelButton();
       renderWelcome();
       renderSettingsSummary();
@@ -1484,6 +1637,8 @@ function onMessage(msg) {
       if (!mine) break;
       app.transcript = [];
       app.streaming = null;
+      app.usage = null;
+      renderUsage();
       $("pending").replaceChildren();
       app.pending.clear();
       renderTranscript(true);
@@ -1584,6 +1739,9 @@ function initEvents() {
       return;
     }
     send({ type: "send", text, tabId: app.tabId });
+    if (app.sent.at(-1) !== text) app.sent.push(text);
+    if (app.sent.length > 50) app.sent.shift();
+    app.sentIdx = -1;
     $("input").value = "";
     resizeInput();
     setStatus("sending\u2026", true);
@@ -1592,7 +1750,31 @@ function initEvents() {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       $("composer").requestSubmit();
+      return;
     }
+    // Up/Down walk through messages sent from this sidebar, like a shell.
+    if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey && !e.isComposing && app.sent.length) {
+      const input = $("input");
+      const recalled = app.sentIdx !== -1 && input.value === app.sent[app.sentIdx];
+      if (input.value && !recalled) return;
+      if (e.key === "ArrowUp") {
+        app.sentIdx = app.sentIdx === -1 ? app.sent.length - 1 : Math.max(0, app.sentIdx - 1);
+      } else {
+        if (app.sentIdx === -1) return;
+        app.sentIdx += 1;
+        if (app.sentIdx >= app.sent.length) app.sentIdx = -1;
+      }
+      e.preventDefault();
+      input.value = app.sentIdx === -1 ? "" : app.sent[app.sentIdx];
+      resizeInput();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !app.busy || app.panel !== "chat" || e.defaultPrevented) return;
+    if (e.target?.closest?.(".pending, dialog")) return;
+    e.preventDefault();
+    $("stopBtn").click();
   });
   $("input").addEventListener("input", resizeInput);
   $("stopBtn").addEventListener("click", () => {
