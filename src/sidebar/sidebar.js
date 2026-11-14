@@ -937,6 +937,7 @@ function fillSettings() {
   $("setToolMode").value = s.toolMode;
   $("setVision").value = s.vision || "auto";
   $("setContext").value = s.contextChars;
+  $("setLocalCtx").value = s.localContextTokens || 16384;
   $("setPageChars").value = s.maxPageChars;
   $("setDryRun").checked = Boolean(s.dryRun);
   $("setAutoUpdate").checked = Boolean(s.autoUpdate);
@@ -1008,7 +1009,8 @@ function saveSettingsForm(event) {
     maxOutputTokens: Math.max(512, Math.min(32768, Number($("setMaxTokens").value) || 8192)),
     toolMode: $("setToolMode").value,
     vision: $("setVision").value,
-    contextChars: Math.max(8e3, Number($("setContext").value) || 48e3),
+    contextChars: Math.max(8e3, Number($("setContext").value) || 96e3),
+    localContextTokens: Math.max(2048, Math.min(262144, Number($("setLocalCtx").value) || 16384)),
     maxPageChars: Math.max(2e3, Number($("setPageChars").value) || 12e3),
     dryRun: $("setDryRun").checked,
     autoUpdate: $("setAutoUpdate").checked,

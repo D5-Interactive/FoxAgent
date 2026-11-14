@@ -129,7 +129,9 @@ Firefox installs signed add-ons only, so FoxAgent cannot replace itself. Update 
 | Long tasks and reasoning | A larger local model, or a reasoning model | A reasoning model from your provider |
 | Fast, small machine | A 2B to 4B model with the compact profile | A small hosted model |
 
-Smaller models get the compact prompt, a shorter step limit, smaller page reads and snapshots, click by text, and pack shortcuts. If a model ignores native tool calls, set **Tool calling** to JSON fallback in Settings. If a long answer or a multi-step plan stops early, raise **Max reply tokens** (default 8,192). The context budget defaults to 96,000 characters; small models are held to 48,000.
+Smaller models get the compact prompt, a shorter step limit, smaller page reads and snapshots, click by text, and pack shortcuts. If a model ignores native tool calls, set **Tool calling** to JSON fallback in Settings; in Auto mode FoxAgent also switches by itself when the server refuses tools. If a long answer or a multi-step plan stops early, raise **Max reply tokens** (default 8,192).
+
+For local servers FoxAgent reads the model's real context window, size and tool and image support from the server and fits each step inside it, counting the system prompt and tool list. Ollama runs through its native API so the **Local context** setting (default 16,384 tokens) actually applies. For LM Studio, llama.cpp and vLLM the window is whatever the server loaded; 16k or more is comfortable for agent work. Cloud models use the character budget, 96,000 by default and 48,000 for small models.
 
 Vision models can receive a screenshot of the tab. Set **Vision** to auto, on or off in Settings. Auto recognizes common vision families in the model id.
 
@@ -168,6 +170,7 @@ FoxAgent/
 ├── tests/
 │   ├── logic.test.mjs         # node --test checks for pure logic
 │   ├── background.test.mjs    # pack gating and per-tab context
+│   ├── context.test.mjs       # context budget, model info, Ollama adapter
 │   ├── page_bridge.py         # real DOM checks with Playwright
 │   └── fixtures/page.html
 ├── src/
@@ -177,7 +180,9 @@ FoxAgent/
 │   │   ├── packs.js           # Pack catalog, modules and prompts
 │   │   ├── updates.js         # GitHub release check and download
 │   │   ├── agent.js           # Tool loop, compaction, small-model profile
-│   │   ├── providers.js       # OpenAI and Anthropic adapters
+│   │   ├── providers.js       # OpenAI, Anthropic and native Ollama adapters
+│   │   ├── modelinfo.js       # Context window and capabilities from local servers
+│   │   ├── budget.js          # Token-aware context budget per step
 │   │   ├── tools.js           # Core tools: read, snapshot, click, fill, wait, screenshot
 │   │   ├── rows.js            # Paginated JSON helpers shared with packs
 │   │   ├── hosts.js           # Host pattern matching for packs

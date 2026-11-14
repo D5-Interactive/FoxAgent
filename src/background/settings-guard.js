@@ -6,6 +6,7 @@ const SETTINGS_KEYS = new Set([
   "maxOutputTokens",
   "toolMode",
   "contextChars",
+  "localContextTokens",
   "maxPageChars",
   "approval",
   "dryRun",
@@ -36,6 +37,9 @@ function cleanSettingsPatch(input) {
         break;
       case "contextChars":
         out.contextChars = Math.max(8e3, Math.min(4e5, Number(value) || 96e3));
+        break;
+      case "localContextTokens":
+        out.localContextTokens = Math.max(2048, Math.min(262144, Math.floor(Number(value) || 16384)));
         break;
       case "maxPageChars":
         out.maxPageChars = Math.max(2e3, Math.min(6e4, Number(value) || 12e3));
