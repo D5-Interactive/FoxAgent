@@ -100,6 +100,9 @@ const DEFAULT_SETTINGS = {
   toolMode: "auto",
   vision: "auto",
   contextChars: 96e3,
+  // num_ctx requested from Ollama. Its /v1 endpoint ignores this, which is why
+  // FoxAgent talks to Ollama's native /api/chat.
+  localContextTokens: 16384,
   contextMigrated: false,
   maxPageChars: 12e3,
   approval: { read: "auto", act: "confirm", write: "confirm" },

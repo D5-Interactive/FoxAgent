@@ -110,13 +110,16 @@
             <textarea id="input" rows="2" placeholder="Ask about this page, or run a task…" spellcheck="true"></textarea>
             <div class="composer-row">
               <span id="status" class="status-line"></span>
+              <span id="ctxMeter" class="ctx-meter" hidden role="meter" aria-label="Context used by the last step" aria-valuemin="0" aria-valuemax="100">
+                <i class="ctx-bar"><b id="ctxFill"></b></i><span id="ctxText"></span>
+              </span>
               <div class="send-group">
                 <button type="button" id="stopBtn" class="btn ghost danger" hidden>Stop</button>
                 <button type="submit" id="sendBtn" class="btn primary">Send</button>
               </div>
             </div>
           </form>
-          <div class="hint"><span>Enter to send</span><span>Shift+Enter for a new line</span></div>
+          <div class="hint"><span>Enter to send</span><span>Shift+Enter for a new line</span><span>&uarr; recalls</span><span>Esc stops</span></div>
         </div>
       </section>
 
@@ -340,6 +343,10 @@
               <label class="field">
                 <span>Context budget (characters)</span>
                 <input id="setContext" class="input" type="number" min="8000" max="400000" step="1000">
+              </label>
+              <label class="field">
+                <span>Local context (tokens, Ollama)</span>
+                <input id="setLocalCtx" class="input" type="number" min="2048" max="262144" step="1024">
               </label>
               <label class="field">
                 <span>Page read limit (characters)</span>

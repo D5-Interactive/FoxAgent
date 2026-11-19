@@ -1,4 +1,6 @@
-import { streamChat, toolSchemas } from "./providers.js";
+import { streamChat, toolSchemas, stripThinking } from "./providers.js";
+import { modelInfo, ollamaNumCtx, forgetModelInfo } from "./modelinfo.js";
+import { planBudget, estimateTokens } from "./budget.js";
 import { TOOLS, findTool, toolsFor, suggestTools, summarizeArgs } from "./tools.js";
 import { packTools, packPrompts } from "./packs.js";
 import { supportsVision } from "./vision.js";
@@ -111,15 +113,18 @@ function fitHistory(history, budget) {
     kept.unshift(turns[i]);
     used += size;
   }
-  const flat = kept.flat().map((e) => ({ ...e }));
+  let flat = kept.flat().map((e) => ({ ...e }));
   let total = flat.reduce((sum, e) => sum + estimate(e), 0);
   let clipped = false;
+  let droppedSteps = 0;
+  // 1. Shorten old tool results, oldest first.
+  const floor = Math.max(300, Math.min(700, Math.floor(budget / 20)));
   if (total > budget) {
     for (const entry of flat) {
       if (total <= budget) break;
       if (entry.role !== "tool" || !entry.text) continue;
       const excess = total - budget;
-      const target = Math.max(700, entry.text.length - excess - 80);
+      const target = Math.max(floor, entry.text.length - excess - 80);
       if (target < entry.text.length) {
         total -= entry.text.length - target;
         entry.text = entry.text.slice(0, target) + "\n[truncated to fit the context window]";
@@ -127,25 +132,67 @@ function fitHistory(history, budget) {
       }
     }
   }
-  return { history: flat, trimmed: kept.length < turns.length || clipped };
+  // 2. A long task is one turn with many steps. If it still does not fit,
+  // drop whole early steps (an assistant call with its results, so call ids
+  // stay paired), keeping the request and the most recent steps.
+  while (total > budget) {
+    const first = flat.findIndex((e, i) => i > 0 && e.role === "assistant");
+    if (first === -1) break;
+    let stop = first + 1;
+    while (stop < flat.length && flat[stop].role === "tool") stop += 1;
+    // Never drop the newest step: the model must see its latest result.
+    if (stop >= flat.length) break;
+    const removed = flat.splice(first, stop - first);
+    total -= removed.reduce((sum, e) => sum + estimate(e), 0);
+    droppedSteps += 1;
+  }
+  // 3. Last resort: the request itself is larger than the window.
+  if (total > budget && flat[0]?.role === "user" && flat[0].text) {
+    const target = Math.max(500, flat[0].text.length - (total - budget) - 80);
+    if (target < flat[0].text.length) {
+      total -= flat[0].text.length - target;
+      flat[0].text = flat[0].text.slice(0, target) + "\n[the rest of this message was cut to fit the context window]";
+      clipped = true;
+    }
+  }
+  return { history: flat, trimmed: kept.length < turns.length || clipped || droppedSteps > 0, droppedSteps };
 }
-function toProviderMessages(session, settings, tab, tools, small, packs, vision) {
-  const system = buildSystemPrompt(session, settings, tab, { tools, small, packs });
-  const configured = Number(settings.contextChars || 96e3);
-  const budget = Math.max(6e3, (small ? Math.min(configured, 48e3) : configured) - system.length);
+function callsAsJson(calls) {
+  const list = (calls || []).map((c) => ({ tool: c.name, args: c.args || {} }));
+  if (!list.length) return "";
+  return "```json\n" + JSON.stringify(list.length === 1 ? list[0] : { tools: list }) + "\n```";
+}
+function scratchpadText(session) {
+  const notes = Array.isArray(session.notes) ? session.notes.filter(Boolean) : [];
+  return notes.length ? "Scratchpad (your task.note entries, kept across steps):\n" + notes.join("\n") : "";
+}
+function toProviderMessages(session, settings, tab, tools, small, packs, vision, plan = null) {
+  const system = plan?.system ?? buildSystemPrompt(session, settings, tab, { tools, small, packs });
+  const scratch = scratchpadText(session);
+  let budget;
+  if (plan?.historyChars) {
+    budget = Math.max(1500, plan.historyChars - scratch.length);
+  } else {
+    const configured = Number(settings.contextChars || 96e3);
+    budget = Math.max(6e3, (small ? Math.min(configured, 48e3) : configured) - system.length - scratch.length);
+  }
   const fitted = fitHistory(session.history, budget);
   const messages = [{ role: "system", content: system }];
   if (fitted.trimmed) {
+    const steps = fitted.droppedSteps ? ` ${fitted.droppedSteps} earlier step${fitted.droppedSteps === 1 ? "" : "s"} of the current task ${fitted.droppedSteps === 1 ? "was" : "were"} removed too.` : "";
     messages.push({
       role: "system",
-      content: "Context note: earlier parts of this conversation were removed to fit the model's window. Use the scratchpad and ask the user if you need a detail again."
+      content: `Context note: earlier parts of this conversation were removed to fit the model's window.${steps} Use the scratchpad and ask the user if you need a detail again.`
     });
   }
+  // After a switch to the JSON protocol, earlier native calls are replayed as
+  // text: a server that refused tools would also refuse tool-role messages.
+  const native = plan?.native !== false;
   for (const entry of fitted.history) {
     if (entry.role === "user") {
       messages.push({ role: "user", content: entry.text || "" });
     } else if (entry.role === "assistant") {
-      if (entry.protocol === "native" && entry.calls?.length) {
+      if (native && entry.protocol === "native" && entry.calls?.length) {
         messages.push({
           role: "assistant",
           content: entry.text || "",
@@ -155,11 +202,13 @@ function toProviderMessages(session, settings, tab, tools, small, packs, vision)
             function: { name: c.name, arguments: JSON.stringify(c.args || {}) }
           }))
         });
+      } else if (entry.calls?.length) {
+        messages.push({ role: "assistant", content: [entry.text, callsAsJson(entry.calls)].filter(Boolean).join("\n\n") });
       } else {
         messages.push({ role: "assistant", content: entry.text || "" });
       }
     } else if (entry.role === "tool") {
-      if (entry.protocol === "native" && entry.callId) {
+      if (native && entry.protocol === "native" && entry.callId) {
         messages.push({ role: "tool", tool_call_id: entry.callId, content: entry.text || "(no output)" });
       } else {
         messages.push({
@@ -170,6 +219,10 @@ ${entry.text || "(no output)"}`
       }
     }
   }
+  // The scratchpad changes as the model works. Sent last, it leaves the
+  // system prompt and earlier turns byte-identical, so local servers can reuse
+  // their prompt cache instead of re-reading the whole conversation.
+  if (scratch) messages.push({ role: "user", content: scratch });
   if (vision && session.lastImage?.dataUrl) {
     messages.push({
       role: "user",
@@ -262,8 +315,8 @@ function parseTextCalls(text) {
   }
   return { calls: calls.slice(0, MAX_CALLS_PER_TURN), text: stripped.replace(/\n{3,}/g, "\n\n").trim() };
 }
-function notice(session, emit, text, level = "info") {
-  const item = addTranscript(session, { type: "notice", text, level });
+function notice(session, emit, text, level = "info", extra = {}) {
+  const item = addTranscript(session, { type: "notice", text, level, ...extra });
   emit({ type: "item", item });
 }
 export async function executeCall(call, ctx) {
@@ -336,6 +389,8 @@ export async function executeCall(call, ctx) {
     settings,
     session,
     small: Boolean(ctx.small),
+    tight: Boolean(ctx.tight),
+    toolClip: Number(ctx.toolClip) || 0,
     emit,
     approve,
     ask,
@@ -346,7 +401,7 @@ export async function executeCall(call, ctx) {
   try {
     const raw = await spec.run(args, toolCtx);
     const ms = Math.round(performance.now() - started);
-    const text = clipText(typeof raw === "string" ? raw : JSON.stringify(raw, null, 1), 26e3);
+    const text = clipText(typeof raw === "string" ? raw : JSON.stringify(raw, null, 1), Number(ctx.toolClip) || 26e3);
     emit({
       type: "tool_end",
       id: call.id,
@@ -366,19 +421,99 @@ export async function executeCall(call, ctx) {
     return { ok: false, text, ms, name: spec.name };
   }
 }
+// Per provider+model facts learned at run time: the server refused native
+// tools, or reported a smaller window than we planned for.
+const learned = new Map();
+function learnedFor(provider, model) {
+  const key = `${provider.key}|${provider.baseUrl}|${model}`;
+  if (!learned.has(key)) learned.set(key, { noNativeTools: false, windowCap: 0 });
+  return learned.get(key);
+}
+// The window the next request will run with, or null when unknown.
+function effectiveWindow(provider, info, settings, memo) {
+  let window = null;
+  if (provider.key === "ollama") window = ollamaNumCtx(info, settings);
+  else if (info?.contextWindow) window = info.contextWindow;
+  if (memo.windowCap) window = window ? Math.min(window, memo.windowCap) : memo.windowCap;
+  return window;
+}
+function describeWindow(provider, info, window) {
+  const label = provider.label || provider.key;
+  const n = window.toLocaleString("en-US");
+  if (provider.key === "lmstudio" && info?.guessed) {
+    return `${label} has not loaded this model yet, so FoxAgent assumes a ${n}-token context. Load it in LM Studio with a larger Context Length (16k or more works well) for longer tasks.`;
+  }
+  if (provider.key === "ollama") {
+    return `Running on Ollama with a ${n}-token context (num_ctx). Change "Local context" in Settings if you have memory to spare or the model is slow to load.`;
+  }
+  return `${label} is serving this model with a ${n}-token context. FoxAgent will keep the conversation inside it; raise the server's context size for longer tasks.`;
+}
+// What the context meter shows: the server's own token counts when it sends
+// them, otherwise an estimate from what was sent.
+function stepUsage(response, plan, sentChars) {
+  const u = response?.usage || {};
+  const prompt = Number(u.prompt_tokens ?? u.input_tokens ?? 0) + Number(u.cache_read_input_tokens || 0) + Number(u.cache_creation_input_tokens || 0);
+  const completion = Number(u.completion_tokens ?? u.output_tokens ?? 0);
+  return {
+    promptTokens: prompt || estimateTokens(sentChars),
+    completionTokens: completion || estimateTokens(String(response?.text || "").length),
+    estimated: !prompt,
+    window: plan.windowTokens || null,
+    at: Date.now()
+  };
+}
+// Model facts for the Models panel, using the same rules a run would.
+async function describeModel(provider, model, settings, { refresh = false } = {}) {
+  if (!model) return null;
+  const info = await modelInfo(provider, model, { refresh });
+  const memo = learnedFor(provider, model);
+  const window = effectiveWindow(provider, info, settings, memo);
+  return {
+    provider: provider.key,
+    model,
+    window,
+    trainedWindow: info.trainedWindow,
+    guessed: Boolean(info.guessed),
+    tools: settings.toolMode === "json" || memo.noNativeTools ? false : info.tools,
+    vision: settings.vision === "auto" && info.vision != null ? info.vision : supportsVision(model, settings.vision),
+    paramsB: info.paramsB || modelSize(model) || 0,
+    small: isSmallModel(model) || (info.paramsB > 0 && info.paramsB <= 12) || Boolean(window && window < 16384),
+    source: info.source,
+    cloud: Boolean(provider.cloud)
+  };
+}
 async function runAgent({ session, settings, emit, approve, ask, signal, small: forceSmall }) {
   const provider = activeProvider();
   const model = activeModel();
   if (!model) throw new Error("No model selected. Open Models and pick one.");
-  const small = forceSmall ?? isSmallModel(model);
-  const vision = supportsVision(model, settings.vision);
+  const info = await modelInfo(provider, model);
+  const memo = learnedFor(provider, model);
+  let window = effectiveWindow(provider, info, settings, memo);
+  // Size from the server beats size guessed from the id ("llama3.2" is 3B).
+  // A small window gets the compact profile whatever the parameter count.
+  const small = forceSmall ?? (
+    isSmallModel(model) ||
+    (info.paramsB > 0 && info.paramsB <= 12) ||
+    Boolean(window && window < 16384)
+  );
+  // The server's capability list beats the id pattern when it is known.
+  const vision = settings.vision === "auto" && info.vision != null ? info.vision : supportsVision(model, settings.vision);
   const maxSteps = Math.max(1, Math.min(80, Number(settings.maxSteps) || 32));
   const stepCap = small ? Math.min(maxSteps, 24) : maxSteps;
-  const useNative = settings.toolMode !== "json";
+  let useNative = settings.toolMode === "native" || (settings.toolMode !== "json" && !memo.noNativeTools && info.tools !== false);
+  if (settings.toolMode === "auto" && info.tools === false && !memo.noNativeTools) {
+    memo.noNativeTools = true;
+    notice(session, emit, `${provider.label || provider.key} reports that ${model} has no native tool support, so FoxAgent is using the JSON tool protocol.`);
+  }
+  if (window && session.windowNotice !== `${model}|${window}` && (window < 32768 || info.guessed)) {
+    session.windowNotice = `${model}|${window}`;
+    notice(session, emit, describeWindow(provider, info, window), window < 8192 ? "warn" : "info");
+  }
   let steps = 0;
   let lastText = "";
   let lastSignature = "";
   let continuations = 0;
+  let retries = 0;
   while (steps < stepCap) {
     if (signal.aborted) break;
     let tab = null;
@@ -400,30 +535,73 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
     const coreNames = new Set(coreTools.map((t) => t.name));
     const tools = [...coreTools, ...extraTools.filter((t) => t?.name && !coreNames.has(t.name))];
     session.tabId = tab?.id ?? session.tabId;
+    const sendingImage = Boolean(vision && session.lastImage?.dataUrl);
+    const system = buildSystemPrompt(session, settings, tab, { tools, small, packs: prompts });
+    // Measure the real request: system prompt and tool schemas count against
+    // the window too. Shorten tool descriptions when the full menu would leave
+    // too little room for the conversation.
+    let schemas = useNative ? toolSchemas(tools) : void 0;
+    let plan = planBudget({ windowTokens: window, settings, small, systemChars: system.length, schemaChars: schemas ? JSON.stringify(schemas).length : 0, image: sendingImage });
+    if (schemas && plan.tight) {
+      schemas = toolSchemas(tools, { compact: true });
+      plan = planBudget({ windowTokens: window, settings, small, systemChars: system.length, schemaChars: JSON.stringify(schemas).length, image: sendingImage });
+    }
+    if (plan.overflow && steps === 0 && session.overflowNotice !== `${model}|${window}`) {
+      session.overflowNotice = `${model}|${window}`;
+      const need = estimateTokens(system.length + (schemas ? JSON.stringify(schemas).length : 0)) + plan.maxTokens + 2e3;
+      notice(session, emit, `This ${window.toLocaleString("en-US")}-token context barely fits FoxAgent's instructions and tools; answers may lose track of the task. Give the model at least ${(Math.ceil(need / 1024) * 1024).toLocaleString("en-US")} tokens of context.`, "warn");
+    }
     emit({ type: "phase", phase: "thinking", step: steps + 1, maxSteps: stepCap });
     emit({ type: "assistant_start" });
-    const sendingImage = Boolean(vision && session.lastImage?.dataUrl);
     let response;
+    const messages = toProviderMessages(session, settings, tab, tools, small, prompts, vision, { system, historyChars: plan.historyChars, native: useNative });
+    const sentChars = JSON.stringify(messages).length + (schemas ? JSON.stringify(schemas).length : 0);
     try {
       response = await streamChat({
         provider,
         model,
-        messages: toProviderMessages(session, settings, tab, tools, small, prompts, vision),
-        tools: useNative ? toolSchemas(tools) : void 0,
+        messages,
+        tools: schemas,
         temperature: settings.temperature,
-        maxTokens: Number(settings.maxOutputTokens) || 8192,
+        maxTokens: plan.maxTokens,
+        numCtx: provider.key === "ollama" ? window : void 0,
         signal,
         onDelta: (t) => emit({ type: "delta", text: t })
       });
       if (sendingImage) session.lastImage = null;
+      retries = 0;
+      session.usage = stepUsage(response, plan, sentChars);
+      emit({ type: "usage", usage: session.usage });
     } catch (err) {
       if (err?.aborted) {
         notice(session, emit, "Stopped.", "warn");
         break;
       }
+      // The server cannot take native tools (no template support, vLLM without
+      // a parser, llama.cpp without --jinja): switch to the JSON protocol.
+      if (err?.toolsUnsupported && useNative && settings.toolMode === "auto" && retries < 2) {
+        retries += 1;
+        useNative = false;
+        memo.noNativeTools = true;
+        notice(session, emit, "The model server refused native tool calls, so FoxAgent switched to the JSON tool protocol for this model.", "warn");
+        emit({ type: "assistant_end", text: "" });
+        continue;
+      }
+      // The prompt did not fit. Learn the real limit (or halve the guess) and
+      // try again with a smaller history instead of failing the task.
+      if (err?.contextOverflow && retries < 2) {
+        retries += 1;
+        const current = window || Math.floor((Number(settings.contextChars) || 96e3) / 3.2);
+        memo.windowCap = Math.max(2048, err.contextLimit && err.contextLimit < current ? err.contextLimit : Math.floor(current * 0.6));
+        forgetModelInfo(provider, model);
+        window = memo.windowCap;
+        notice(session, emit, `The request was larger than the model's context. Retrying with a ${window.toLocaleString("en-US")}-token budget.`, "warn");
+        emit({ type: "assistant_end", text: "" });
+        continue;
+      }
       throw err;
     }
-    let text = response.text || "";
+    let text = stripThinking(response.text || "");
     let calls = response.calls || [];
     let protocol = "native";
     if (!calls.length && settings.toolMode !== "native") {
@@ -462,9 +640,12 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
         continue;
       }
       if (response.finishReason === "length") {
-        notice(session, emit, "The model hit its output limit mid-answer. Raise Max reply tokens in Settings, then ask it to continue.", "warn");
+        notice(session, emit, plan.windowTokens ? `The model hit its output limit mid-answer (${plan.maxTokens.toLocaleString("en-US")} tokens, a quarter of its context). A larger context on the model server leaves room for longer replies.` : "The model hit its output limit mid-answer. Raise Max reply tokens in Settings, then ask it to continue.", "warn", { action: "continue" });
       }
-      if (!text) notice(session, emit, "The model returned an empty reply. Try again, or pick a different model.", "warn");
+      if (!text) {
+        const thoughtOnly = Boolean(String(response.text || "").trim());
+        notice(session, emit, thoughtOnly ? "The model spent its reply thinking and gave no answer. Ask it to continue, or raise the reply or context limit." : "The model returned an empty reply. Try again, or pick a different model.", "warn");
+      }
       break;
     }
     for (const call of calls) {
@@ -480,7 +661,7 @@ async function runAgent({ session, settings, emit, approve, ask, signal, small: 
       } else {
         const signature = call.name + JSON.stringify(call.args || {});
         const repeated = signature === lastSignature;
-        result = await executeCall(call, { session, settings, emit, approve, ask, signal, small, tools });
+        result = await executeCall(call, { session, settings, emit, approve, ask, signal, small, tools, toolClip: plan.toolClip, tight: plan.tight });
         if (repeated && !result.aborted) {
           result.text = `NOTE: this is the same call with the same arguments as the previous step. Change approach or answer with what you have.
 ${result.text}`;
@@ -514,12 +695,15 @@ ${result.text}`;
     if (signal.aborted) break;
   }
   if (steps >= stepCap) {
-    notice(session, emit, `Step limit reached (${stepCap}). Progress is in the scratchpad; send "continue" to keep going, or raise the limit in Settings.`, "warn");
+    notice(session, emit, `Step limit reached (${stepCap}). Progress is in the scratchpad; send "continue" to keep going, or raise the limit in Settings.`, "warn", { action: "continue" });
   }
   return { steps, text: lastText, small, vision };
 }
 export {
   allowedBySite,
+  describeModel,
+  fitHistory,
+  toProviderMessages,
   isSmallModel,
   modelSize,
   parseTextCalls,

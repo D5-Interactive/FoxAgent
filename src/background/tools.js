@@ -87,10 +87,12 @@ const TOOLS = [
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
-      const cap = ctx.small ? Math.min(6e3, ctx.settings.maxPageChars) : ctx.settings.maxPageChars;
+      let cap = ctx.small ? Math.min(6e3, ctx.settings.maxPageChars) : ctx.settings.maxPageChars;
+      // Read no more than the step can keep; the rest would be cut anyway.
+      if (ctx.toolClip) cap = Math.max(1e3, Math.min(cap, ctx.toolClip - 200));
       const res = await callPage(tab, "read", {
         selector: args.selector,
-        maxChars: args.maxChars ?? cap
+        maxChars: ctx.toolClip ? Math.min(args.maxChars ?? cap, Math.max(1e3, ctx.toolClip - 200)) : args.maxChars ?? cap
       });
       if (!res.markdown) {
         return `The page has no readable text in the main container (it may be a JavaScript app or a PDF).
@@ -120,7 +122,7 @@ ${res.markdown}`
     },
     async run(args, ctx) {
       const tab = await pageFor(args, ctx);
-      const maxElements = args.maxElements ?? (ctx.small ? 60 : 200);
+      const maxElements = args.maxElements ?? (ctx.tight ? 40 : ctx.small ? 60 : 200);
       const res = await callPage(tab, "snapshot", { maxElements });
       const parts = [
         `TITLE: ${res.title}`,

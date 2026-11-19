@@ -39,6 +39,7 @@
 | **History and notes** | Conversation transcript, scratchpad, and an exportable activity log |
 | **One task per tab** | Each tab keeps its transcript, scratchpad, running task, pack tools and recipes; a strip and a Chats list show the rest |
 | **Small-model tuned** | Compact prompts, smaller snapshots, click by text, multi-field fill, waiting, and pack shortcuts |
+| **Fits your model's context** | Reads the real context window, size and tool and image support from local servers, budgets every step to fit, and shows a context meter beside Send |
 | **Precise page control** | CSS, text and role queries; shadow DOM and same-origin iframe traversal; form fill and key presses |
 | **Vision** | Screenshot a tab and send the image to a vision model, then clear it so later steps are not charged for it |
 | **Light and night UI** | Monochrome white-on-black styling with a moon toggle for the near-black variant |
@@ -83,7 +84,7 @@ Open the **Models** tab, or use the model button in the top bar.
 
 ### 3. Start working
 
-- **Chat**: ask about the current page, run a task, and approve actions as they come.
+- **Chat**: ask about the current page, run a task, and approve actions as they come. The meter beside Send shows how full the model's context was on the last step. Copy any reply, Retry after an error, press Up to recall a message, and Esc to stop.
 - **Tabs**: each tab keeps its own conversation and task. A strip under the tabs shows work still running elsewhere.
 - **Chats**: one list of every tab conversation, with Open and Clear actions.
 - **Packs**: install the site tools you need, such as a site API or a careful UI playbook.
@@ -129,7 +130,9 @@ Firefox installs signed add-ons only, so FoxAgent cannot replace itself. Update 
 | Long tasks and reasoning | A larger local model, or a reasoning model | A reasoning model from your provider |
 | Fast, small machine | A 2B to 4B model with the compact profile | A small hosted model |
 
-Smaller models get the compact prompt, a shorter step limit, smaller page reads and snapshots, click by text, and pack shortcuts. If a model ignores native tool calls, set **Tool calling** to JSON fallback in Settings. If a long answer or a multi-step plan stops early, raise **Max reply tokens** (default 8,192). The context budget defaults to 96,000 characters; small models are held to 48,000.
+Smaller models get the compact prompt, a shorter step limit, smaller page reads and snapshots, click by text, and pack shortcuts. If a model ignores native tool calls, set **Tool calling** to JSON fallback in Settings; in Auto mode FoxAgent also switches by itself when the server refuses tools. If a long answer or a multi-step plan stops early, raise **Max reply tokens** (default 8,192).
+
+For local servers FoxAgent reads the model's real context window, size and tool and image support from the server and fits each step inside it, counting the system prompt and tool list. Ollama runs through its native API so the **Local context** setting (default 16,384 tokens) actually applies. For LM Studio, llama.cpp and vLLM the window is whatever the server loaded; 16k or more is comfortable for agent work. Cloud models use the character budget, 96,000 by default and 48,000 for small models.
 
 Vision models can receive a screenshot of the tab. Set **Vision** to auto, on or off in Settings. Auto recognizes common vision families in the model id.
 
@@ -168,6 +171,7 @@ FoxAgent/
 ├── tests/
 │   ├── logic.test.mjs         # node --test checks for pure logic
 │   ├── background.test.mjs    # pack gating and per-tab context
+│   ├── context.test.mjs       # context budget, model info, Ollama adapter
 │   ├── page_bridge.py         # real DOM checks with Playwright
 │   └── fixtures/page.html
 ├── src/
@@ -177,7 +181,9 @@ FoxAgent/
 │   │   ├── packs.js           # Pack catalog, modules and prompts
 │   │   ├── updates.js         # GitHub release check and download
 │   │   ├── agent.js           # Tool loop, compaction, small-model profile
-│   │   ├── providers.js       # OpenAI and Anthropic adapters
+│   │   ├── providers.js       # OpenAI, Anthropic and native Ollama adapters
+│   │   ├── modelinfo.js       # Context window and capabilities from local servers
+│   │   ├── budget.js          # Token-aware context budget per step
 │   │   ├── tools.js           # Core tools: read, snapshot, click, fill, wait, screenshot
 │   │   ├── rows.js            # Paginated JSON helpers shared with packs
 │   │   ├── hosts.js           # Host pattern matching for packs
